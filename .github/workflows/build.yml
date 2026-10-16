@@ -1,0 +1,346 @@
+name: Build APK
+on:
+  workflow_dispatch:
+  push:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+      - name: Write project files, sign, and build
+        run: |
+          set -e
+          mkdir -p PhoneLocker && cd PhoneLocker
+          mkdir -p $(dirname settings.gradle.kts)
+          cat > settings.gradle.kts <<'EOF_FILE'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+          rootProject.name = "PhoneLocker"
+          include(":app")
+          EOF_FILE
+          mkdir -p $(dirname build.gradle.kts)
+          cat > build.gradle.kts <<'EOF_FILE'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          EOF_FILE
+          mkdir -p $(dirname gradle/wrapper/gradle-wrapper.properties)
+          cat > gradle/wrapper/gradle-wrapper.properties <<'EOF_FILE'
+          distributionBase=GRADLE_USER_HOME
+          distributionPath=wrapper/dists
+          distributionUrl=https\://services.gradle.org/distributions/gradle-8.7-bin.zip
+          zipStoreBase=GRADLE_USER_HOME
+          zipStorePath=wrapper/dists
+          EOF_FILE
+          mkdir -p $(dirname app/build.gradle.kts)
+          cat > app/build.gradle.kts <<'EOF_FILE'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "com.phonelocker.app"
+              compileSdk = 34
+              defaultConfig {
+                  applicationId = "com.phonelocker.app"
+                  minSdk = 28
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+              signingConfigs {
+                  create("release") {
+                      storeFile = file("keystore/release.keystore")
+                      storePassword = "phonelocker123"
+                      keyAlias = "phonelocker"
+                      keyPassword = "phonelocker123"
+                  }
+              }
+              buildTypes {
+                  getByName("release") {
+                      signingConfig = signingConfigs.getByName("release")
+                      isMinifyEnabled = false
+                  }
+                  getByName("debug") {
+                      // debug builds already auto-sign with the default debug cert
+                  }
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = "17" }
+          }
+          EOF_FILE
+          mkdir -p $(dirname app/src/main/AndroidManifest.xml)
+          cat > app/src/main/AndroidManifest.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+              <application
+                  android:label="Phone Locker"
+                  android:theme="@android:style/Theme.DeviceDefault.Light">
+
+                  <activity android:name=".MainActivity" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <service
+                      android:name=".LockService"
+                      android:exported="false"
+                      android:foregroundServiceType="specialUse">
+                      <property
+                          android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                          android:value="timed screen lock overlay" />
+                  </service>
+
+                  <receiver android:name=".BootReceiver" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.BOOT_COMPLETED" />
+                      </intent-filter>
+                  </receiver>
+              </application>
+          </manifest>
+          EOF_FILE
+          mkdir -p $(dirname app/src/main/java/com/phonelocker/app/BootReceiver.kt)
+          cat > app/src/main/java/com/phonelocker/app/BootReceiver.kt <<'EOF_FILE'
+          package com.phonelocker.app
+
+          import android.content.BroadcastReceiver
+          import android.content.Context
+          import android.content.Intent
+          import android.provider.Settings
+
+          class BootReceiver : BroadcastReceiver() {
+              override fun onReceive(context: Context, intent: Intent) {
+                  val on = context.getSharedPreferences("p", Context.MODE_PRIVATE).getBoolean("on", false)
+                  if (on && Settings.canDrawOverlays(context)) {
+                      context.startForegroundService(Intent(context, LockService::class.java))
+                  }
+              }
+          }
+          EOF_FILE
+          mkdir -p $(dirname app/src/main/java/com/phonelocker/app/MainActivity.kt)
+          cat > app/src/main/java/com/phonelocker/app/MainActivity.kt <<'EOF_FILE'
+          package com.phonelocker.app
+
+          import android.Manifest
+          import android.app.Activity
+          import android.content.Intent
+          import android.net.Uri
+          import android.os.Build
+          import android.os.Bundle
+          import android.provider.Settings
+          import android.widget.Button
+          import android.widget.LinearLayout
+          import android.widget.TextView
+
+          class MainActivity : Activity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  val prefs = getSharedPreferences("p", MODE_PRIVATE)
+                  val status = TextView(this).apply {
+                      textSize = 18f
+                      setPadding(48, 96, 48, 24)
+                      text = "1 hr free, then 15 min locked, on repeat."
+                  }
+                  val start = Button(this).apply { text = "Start" }
+                  val stop = Button(this).apply { text = "Stop" }
+                  setContentView(LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      addView(status)
+                      addView(start)
+                      addView(stop)
+                  })
+
+                  start.setOnClickListener {
+                      if (!Settings.canDrawOverlays(this)) {
+                          status.text = "Allow \"Display over other apps\", come back, tap Start again."
+                          startActivity(
+                              Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
+                          )
+                          return@setOnClickListener
+                      }
+                      if (Build.VERSION.SDK_INT >= 33) {
+                          requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
+                      }
+                      val ed = prefs.edit().putBoolean("on", true)
+                      if (!prefs.getBoolean("on", false)) ed.putLong("t0", System.currentTimeMillis())
+                      ed.apply()
+                      startForegroundService(Intent(this, LockService::class.java))
+                      status.text = "Running. First lock 1 hr after you first tapped Start."
+                  }
+                  stop.setOnClickListener {
+                      prefs.edit().putBoolean("on", false).apply()
+                      stopService(Intent(this, LockService::class.java))
+                      status.text = "Stopped."
+                  }
+              }
+          }
+          EOF_FILE
+          mkdir -p $(dirname app/src/main/java/com/phonelocker/app/LockService.kt)
+          cat > app/src/main/java/com/phonelocker/app/LockService.kt <<'EOF_FILE'
+          package com.phonelocker.app
+
+          import android.app.Notification
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.app.Service
+          import android.content.BroadcastReceiver
+          import android.content.Context
+          import android.content.Intent
+          import android.content.IntentFilter
+          import android.graphics.Color
+          import android.graphics.PixelFormat
+          import android.os.Handler
+          import android.os.IBinder
+          import android.os.Looper
+          import android.view.Gravity
+          import android.view.MotionEvent
+          import android.view.ViewGroup.LayoutParams.MATCH_PARENT
+          import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+          import android.view.WindowManager
+          import android.widget.LinearLayout
+          import android.widget.TextView
+
+          private const val FREE_MS = 60 * 60 * 1000L          // phone usable
+          private const val LOCK_MS = 15 * 60 * 1000L          // phone locked
+          private const val EMERGENCY_HOLD_MS = 15_000L        // hold-to-bail time; set to 0 for a strict lock with no bypass
+
+          class LockService : Service() {
+              private val handler = Handler(Looper.getMainLooper())
+              private val prefs by lazy { getSharedPreferences("p", MODE_PRIVATE) }
+              private lateinit var wm: WindowManager
+              private var overlay: LinearLayout? = null
+              private var label: TextView? = null
+
+              private val bypass = Runnable {
+                  prefs.edit().putLong("t0", System.currentTimeMillis()).apply()
+                  tick()
+              }
+              private val ticker = object : Runnable {
+                  override fun run() {
+                      tick()
+                      handler.postDelayed(this, 1000)
+                  }
+              }
+              private val screenOn = object : BroadcastReceiver() {
+                  override fun onReceive(c: Context?, i: Intent?) = tick()
+              }
+
+              override fun onBind(intent: Intent?): IBinder? = null
+
+              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int) = START_STICKY
+
+              override fun onCreate() {
+                  super.onCreate()
+                  wm = getSystemService(WINDOW_SERVICE) as WindowManager
+                  getSystemService(NotificationManager::class.java).createNotificationChannel(
+                      NotificationChannel("locker", "Phone Locker", NotificationManager.IMPORTANCE_LOW)
+                  )
+                  startForeground(
+                      1,
+                      Notification.Builder(this, "locker")
+                          .setContentTitle("Phone Locker is running")
+                          .setSmallIcon(android.R.drawable.ic_lock_idle_lock)
+                          .setOngoing(true)
+                          .build()
+                  )
+                  registerReceiver(screenOn, IntentFilter(Intent.ACTION_SCREEN_ON))
+                  handler.post(ticker)
+              }
+
+              override fun onDestroy() {
+                  handler.removeCallbacksAndMessages(null)
+                  unregisterReceiver(screenOn)
+                  hide()
+                  super.onDestroy()
+              }
+
+              // Cycle position comes from a saved start time, so it survives reboots and restarts.
+              private fun tick() {
+                  val t0 = prefs.getLong("t0", System.currentTimeMillis())
+                  val cycle = FREE_MS + LOCK_MS
+                  val pos = Math.floorMod(System.currentTimeMillis() - t0, cycle)
+                  if (pos < FREE_MS) hide() else show((cycle - pos) / 1000)
+              }
+
+              private fun show(secsLeft: Long) {
+                  if (overlay == null) {
+                      val root = LinearLayout(this).apply {
+                          orientation = LinearLayout.VERTICAL
+                          setBackgroundColor(Color.BLACK)
+                          isClickable = true
+                      }
+                      val tv = TextView(this).apply {
+                          setTextColor(Color.WHITE)
+                          textSize = 30f
+                          gravity = Gravity.CENTER
+                      }
+                      label = tv
+                      root.addView(tv, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+                      if (EMERGENCY_HOLD_MS > 0) {
+                          val sos = TextView(this).apply {
+                              text = "Emergency: press and hold to unlock"
+                              setTextColor(Color.GRAY)
+                              gravity = Gravity.CENTER
+                              setPadding(0, 40, 0, 160)
+                          }
+                          sos.setOnTouchListener { _, e ->
+                              when (e.action) {
+                                  MotionEvent.ACTION_DOWN -> handler.postDelayed(bypass, EMERGENCY_HOLD_MS)
+                                  MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> handler.removeCallbacks(bypass)
+                              }
+                              true
+                          }
+                          root.addView(sos, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+                      }
+                      val lp = WindowManager.LayoutParams(
+                          MATCH_PARENT, MATCH_PARENT,
+                          WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                          WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                              WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                          PixelFormat.OPAQUE
+                      )
+                      lp.layoutInDisplayCutoutMode =
+                          WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                      try {
+                          wm.addView(root, lp)
+                          overlay = root
+                      } catch (e: Exception) {
+                          return // overlay permission missing
+                      }
+                  }
+                  label?.text = "Phone locked\n\n%d:%02d".format(secsLeft / 60, secsLeft % 60)
+              }
+
+              private fun hide() {
+                  overlay?.let { wm.removeView(it) }
+                  overlay = null
+                  handler.removeCallbacks(bypass)
+              }
+          }
+          EOF_FILE
+          mkdir -p app/keystore
+          keytool -genkeypair -keystore app/keystore/release.keystore -alias phonelocker -keyalg RSA -keysize 2048 -validity 10000 -storepass phonelocker123 -keypass phonelocker123 -dname "CN=PhoneLocker"
+          gradle assembleRelease
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PhoneLocker-signed-apk
+          path: PhoneLocker/app/build/outputs/apk/release/app-release.apk
