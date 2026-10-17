@@ -6,6 +6,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -210,6 +211,7 @@ jobs:
           import android.graphics.PixelFormat
           import android.os.Handler
           import android.os.IBinder
+          import android.net.Uri
           import android.os.Looper
           import android.view.Gravity
           import android.view.MotionEvent
@@ -218,6 +220,7 @@ jobs:
           import android.view.WindowManager
           import android.widget.LinearLayout
           import android.widget.TextView
+          import android.widget.VideoView
 
           private const val FREE_MS = 60 * 60 * 1000L          // phone usable
           private const val LOCK_MS = 15 * 60 * 1000L          // phone locked
@@ -229,6 +232,7 @@ jobs:
               private lateinit var wm: WindowManager
               private var overlay: LinearLayout? = null
               private var label: TextView? = null
+              private var video: VideoView? = null
 
               private val bypass = Runnable {
                   prefs.edit().putLong("t0", System.currentTimeMillis()).apply()
@@ -288,6 +292,21 @@ jobs:
                           setBackgroundColor(Color.BLACK)
                           isClickable = true
                       }
+                      val vid = resources.getIdentifier("lock_video", "raw", packageName)
+                      if (vid != 0) {
+                          val vv = VideoView(this)
+                          vv.setVideoURI(Uri.parse("android.resource://$packageName/$vid"))
+                          vv.setOnPreparedListener { mp ->
+                              mp.isLooping = true
+                              mp.setVolume(0f, 0f)
+                              vv.start()
+                          }
+                          vv.setOnErrorListener { _, _, _ -> true } // swallow errors; default would try to show a dialog
+                          video = vv
+                          val vlp = LinearLayout.LayoutParams(MATCH_PARENT, 0, 2f)
+                          vlp.gravity = Gravity.CENTER
+                          root.addView(vv, vlp)
+                      }
                       val tv = TextView(this).apply {
                           setTextColor(Color.WHITE)
                           textSize = 30f
@@ -327,10 +346,12 @@ jobs:
                           return // overlay permission missing
                       }
                   }
-                  label?.text = "Phone locked\n\n%d:%02d".format(secsLeft / 60, secsLeft % 60)
+                  label?.text = "Phone locked\n\nUnlocks in\n%d:%02d".format(secsLeft / 60, secsLeft % 60)
               }
 
               private fun hide() {
+                  video?.stopPlayback()
+                  video = null
                   overlay?.let { wm.removeView(it) }
                   overlay = null
                   handler.removeCallbacks(bypass)
@@ -339,6 +360,12 @@ jobs:
           EOF_FILE
           mkdir -p app/keystore
           keytool -genkeypair -keystore app/keystore/release.keystore -alias phonelocker -keyalg RSA -keysize 2048 -validity 10000 -storepass phonelocker123 -keypass phonelocker123 -dname "CN=PhoneLocker"
+          mkdir -p app/src/main/res/raw
+          VID=$(ls ../*.mp4 2>/dev/null | head -1)
+          if [ -n "$VID" ]; then
+            command -v ffmpeg >/dev/null || (sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg)
+            ffmpeg -y -i "$VID" -an -vf "scale=-2:720,format=yuv420p" -c:v libx264 -profile:v main -crf 28 -movflags +faststart app/src/main/res/raw/lock_video.mp4 || cp "$VID" app/src/main/res/raw/lock_video.mp4
+          fi
           gradle assembleRelease
       - uses: actions/upload-artifact@v4
         with:
