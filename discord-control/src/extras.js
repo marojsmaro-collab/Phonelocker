@@ -417,18 +417,23 @@ export async function applyBranding(client) {
   } catch (e) {
     console.error("Status failed:", e.message);
   }
+  await applyImage(client, "bot-avatar.png", "avatarHash", (buf) => client.user.setAvatar(buf), "pfp");
+  await applyImage(client, "bot-banner.png", "bannerHash", (buf) => client.user.setBanner(buf), "banner");
+}
+
+async function applyImage(client, fileName, key, apply, label) {
   try {
-    const file = path.join(here, "..", "assets", "bot-avatar.png");
+    const file = path.join(here, "..", "assets", fileName);
     if (!fs.existsSync(file)) return;
     const buf = fs.readFileSync(file);
     const hash = crypto.createHash("sha1").update(buf).digest("hex");
-    const saved = getConfig("_bot").avatarHash;
+    const saved = getConfig("_bot")[key];
     if (saved === hash || saved === "custom") return;
-    await client.user.setAvatar(buf);
-    updateConfig("_bot", (c) => (c.avatarHash = hash));
-    console.log("Bot pfp updated");
+    await apply(buf);
+    updateConfig("_bot", (c) => (c[key] = hash));
+    console.log(`Bot ${label} updated`);
   } catch (e) {
-    console.error("Could not set the bot pfp (Discord limits how often it can change, it'll retry next start):", e.message);
+    console.error(`Could not set the bot ${label} (Discord limits how often it can change, it'll retry next start):`, e.message);
   }
 }
 
