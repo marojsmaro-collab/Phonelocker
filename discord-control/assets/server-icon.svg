@@ -1,0 +1,149 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="40%" r="70%">
+      <stop offset="0" stop-color="#5b1fa8"/>
+      <stop offset="0.55" stop-color="#2a0c55"/>
+      <stop offset="1" stop-color="#12052a"/>
+    </radialGradient>
+    <radialGradient id="boom" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#ffd23f" stop-opacity="1"/>
+      <stop offset="0.45" stop-color="#ff7a1a" stop-opacity="0.85"/>
+      <stop offset="1" stop-color="#ff3d00" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="skin" cx="40%" cy="35%" r="70%">
+      <stop offset="0" stop-color="#b8ff4d"/>
+      <stop offset="0.6" stop-color="#6fd11a"/>
+      <stop offset="1" stop-color="#3f8f0c"/>
+    </radialGradient>
+    <linearGradient id="metal" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#d7deea"/>
+      <stop offset="1" stop-color="#7c879c"/>
+    </linearGradient>
+    <radialGradient id="core" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#fff6c2"/>
+      <stop offset="0.5" stop-color="#ffb21a"/>
+      <stop offset="1" stop-color="#ff5a00"/>
+    </radialGradient>
+    <linearGradient id="beam" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#9dff6a" stop-opacity="0.7"/>
+      <stop offset="1" stop-color="#9dff6a" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+
+  <!-- stars -->
+  <g fill="#ffffff" opacity="0.7">
+    <circle cx="160" cy="140" r="4"/><circle cx="300" cy="90" r="3"/><circle cx="700" cy="110" r="3"/>
+    <circle cx="930" cy="330" r="4"/><circle cx="90" cy="420" r="3"/><circle cx="600" cy="60" r="4"/>
+  </g>
+
+  <!-- UFO -->
+  <g transform="translate(815 205) rotate(12)">
+    <path d="M-40 30 L40 30 L95 260 L-95 260 Z" fill="url(#beam)"/>
+    <ellipse cx="0" cy="0" rx="46" ry="34" fill="#7df9ff" stroke="#1a0b2e" stroke-width="10"/>
+    <ellipse cx="0" cy="18" rx="110" ry="30" fill="url(#metal)" stroke="#1a0b2e" stroke-width="10"/>
+    <circle cx="-60" cy="20" r="8" fill="#ff3df2"/><circle cx="0" cy="26" r="8" fill="#9dff6a"/><circle cx="60" cy="20" r="8" fill="#ffd23f"/>
+  </g>
+
+  <!-- explosion glow -->
+  <ellipse cx="560" cy="880" rx="520" ry="260" fill="url(#boom)"/>
+
+  <!-- back skyline -->
+  <g fill="#2b1650" stroke="#1a0b2e" stroke-width="8">
+    <rect x="-10" y="640" width="130" height="400"/>
+    <rect x="110" y="700" width="110" height="340"/>
+    <rect x="820" y="620" width="120" height="420"/>
+    <rect x="930" y="690" width="110" height="350"/>
+  </g>
+  <g fill="#ffd23f" opacity="0.85">
+    <rect x="20" y="680" width="22" height="26"/><rect x="66" y="680" width="22" height="26"/>
+    <rect x="20" y="740" width="22" height="26"/><rect x="66" y="800" width="22" height="26"/>
+    <rect x="140" y="740" width="20" height="24"/><rect x="180" y="790" width="20" height="24"/>
+    <rect x="850" y="660" width="22" height="26"/><rect x="895" y="720" width="22" height="26"/>
+    <rect x="850" y="780" width="22" height="26"/><rect x="960" y="730" width="20" height="24"/>
+  </g>
+
+  <!-- police car flying -->
+  <g transform="translate(190 330) rotate(-28)">
+    <rect x="-95" y="-28" width="190" height="56" rx="16" fill="#ffffff" stroke="#1a0b2e" stroke-width="10"/>
+    <path d="M-50 -28 L-30 -70 L40 -70 L60 -28 Z" fill="#1d3b8f" stroke="#1a0b2e" stroke-width="10"/>
+    <rect x="-95" y="-6" width="190" height="20" fill="#1d3b8f"/>
+    <rect x="-22" y="-92" width="22" height="18" rx="4" fill="#ff2a2a" stroke="#1a0b2e" stroke-width="6"/>
+    <rect x="0" y="-92" width="22" height="18" rx="4" fill="#2a8cff" stroke="#1a0b2e" stroke-width="6"/>
+    <circle cx="-55" cy="34" r="22" fill="#1a0b2e"/><circle cx="55" cy="34" r="22" fill="#1a0b2e"/>
+    <circle cx="-55" cy="34" r="9" fill="#9aa3b5"/><circle cx="55" cy="34" r="9" fill="#9aa3b5"/>
+  </g>
+  <!-- motion lines -->
+  <g stroke="#ffffff" stroke-width="8" stroke-linecap="round" opacity="0.6">
+    <line x1="300" y1="400" x2="350" y2="430"/><line x1="290" y1="440" x2="330" y2="462"/>
+  </g>
+
+  <!-- arm (back) -->
+  <ellipse cx="760" cy="430" rx="70" ry="44" transform="rotate(-50 760 430)" fill="url(#skin)" stroke="#1a0b2e" stroke-width="14"/>
+  <circle cx="805" cy="365" r="46" fill="url(#skin)" stroke="#1a0b2e" stroke-width="14"/>
+
+  <!-- body -->
+  <ellipse cx="510" cy="560" rx="270" ry="255" fill="url(#skin)" stroke="#1a0b2e" stroke-width="16"/>
+
+  <!-- arm (front, fist up) -->
+  <ellipse cx="270" cy="500" rx="72" ry="44" transform="rotate(45 270 500)" fill="url(#skin)" stroke="#1a0b2e" stroke-width="14"/>
+  <circle cx="225" cy="440" r="48" fill="url(#skin)" stroke="#1a0b2e" stroke-width="14"/>
+
+  <!-- mech chest plate -->
+  <rect x="395" y="632" width="230" height="146" rx="34" fill="url(#metal)" stroke="#1a0b2e" stroke-width="14"/>
+  <circle cx="510" cy="705" r="42" fill="url(#core)" stroke="#1a0b2e" stroke-width="10"/>
+  <circle cx="510" cy="705" r="15" fill="#fffbe0"/>
+  <g fill="#1a0b2e"><circle cx="425" cy="660" r="8"/><circle cx="595" cy="660" r="8"/><circle cx="425" cy="750" r="8"/><circle cx="595" cy="750" r="8"/></g>
+  <rect x="436" y="692" width="18" height="26" rx="5" fill="#ff2a6d" stroke="#1a0b2e" stroke-width="5"/>
+  <rect x="566" y="692" width="18" height="26" rx="5" fill="#2affc1" stroke="#1a0b2e" stroke-width="5"/>
+
+  <!-- eggshell helmet -->
+  <path d="M290 420 C 280 260, 380 175, 512 175 C 644 175, 744 260, 734 420
+           L 700 380 L 668 430 L 628 372 L 590 428 L 552 370 L 512 424 L 472 370 L 434 428 L 396 372 L 356 430 L 324 380 Z"
+        fill="#fff6e3" stroke="#1a0b2e" stroke-width="16" stroke-linejoin="round"/>
+  <g fill="#e8b36b"><ellipse cx="420" cy="260" rx="16" ry="11"/><ellipse cx="600" cy="240" rx="12" ry="9"/><ellipse cx="660" cy="320" rx="14" ry="10"/><ellipse cx="370" cy="335" rx="10" ry="8"/></g>
+  <path d="M560 210 L 585 250 L 565 285" fill="none" stroke="#1a0b2e" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- antenna -->
+  <line x1="512" y1="178" x2="512" y2="100" stroke="#1a0b2e" stroke-width="14" stroke-linecap="round"/>
+  <circle cx="512" cy="92" r="26" fill="#ff2a2a" stroke="#1a0b2e" stroke-width="10"/>
+  <circle cx="504" cy="84" r="8" fill="#ffb3b3"/>
+
+  <!-- eyes -->
+  <ellipse cx="420" cy="480" rx="62" ry="68" fill="#ffffff" stroke="#1a0b2e" stroke-width="12"/>
+  <ellipse cx="600" cy="480" rx="62" ry="68" fill="#ffffff" stroke="#1a0b2e" stroke-width="12"/>
+  <circle cx="438" cy="496" r="30" fill="#1a0b2e"/><circle cx="582" cy="496" r="30" fill="#1a0b2e"/>
+  <circle cx="448" cy="484" r="10" fill="#ffffff"/><circle cx="592" cy="484" r="10" fill="#ffffff"/>
+  <!-- angry brows -->
+  <path d="M350 418 L 470 452" stroke="#1a0b2e" stroke-width="22" stroke-linecap="round"/>
+  <path d="M670 418 L 550 452" stroke="#1a0b2e" stroke-width="22" stroke-linecap="round"/>
+
+  <!-- mouth -->
+  <path d="M400 540 Q 510 630 620 540 Q 610 606 510 614 Q 410 606 400 540 Z" fill="#7a0f2e" stroke="#1a0b2e" stroke-width="12" stroke-linejoin="round"/>
+  <path d="M424 552 L 446 586 L 468 566 Z M 552 566 L 574 586 L 596 552 Z M 486 576 L 498 598 L 510 578 Z" fill="#ffffff"/>
+
+  <!-- crushed building under foot -->
+  <g transform="rotate(14 690 900)">
+    <rect x="620" y="820" width="150" height="260" fill="#3a1f6b" stroke="#1a0b2e" stroke-width="10"/>
+    <g fill="#ffd23f"><rect x="645" y="860" width="24" height="28"/><rect x="715" y="860" width="24" height="28"/><rect x="645" y="920" width="24" height="28"/></g>
+  </g>
+  <!-- debris -->
+  <g fill="#8a7bb0" stroke="#1a0b2e" stroke-width="7">
+    <rect x="560" y="770" width="34" height="34" transform="rotate(20 577 787)"/>
+    <rect x="790" y="740" width="40" height="40" transform="rotate(-25 810 760)"/>
+    <rect x="830" y="810" width="26" height="26" transform="rotate(35 843 823)"/>
+    <rect x="530" y="830" width="24" height="24" transform="rotate(-15 542 842)"/>
+  </g>
+
+  <!-- feet -->
+  <ellipse cx="380" cy="800" rx="95" ry="58" fill="url(#skin)" stroke="#1a0b2e" stroke-width="14"/>
+  <ellipse cx="690" cy="790" rx="105" ry="62" fill="url(#skin)" stroke="#1a0b2e" stroke-width="14"/>
+  <g fill="#fff6e3" stroke="#1a0b2e" stroke-width="6">
+    <path d="M320 830 l12 26 l14 -26 Z"/><path d="M370 838 l12 26 l14 -26 Z"/><path d="M420 832 l12 26 l14 -26 Z"/>
+    <path d="M628 822 l12 26 l14 -26 Z"/><path d="M680 830 l12 26 l14 -26 Z"/><path d="M732 822 l12 26 l14 -26 Z"/>
+  </g>
+  <!-- impact lines -->
+  <g stroke="#ffd23f" stroke-width="12" stroke-linecap="round">
+    <line x1="820" y1="790" x2="880" y2="770"/><line x1="815" y1="830" x2="885" y2="845"/><line x1="560" y1="810" x2="505" y2="840"/>
+  </g>
+</svg>
