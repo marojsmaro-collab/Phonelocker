@@ -3,7 +3,7 @@ import express from "express";
 import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { client, startBot, inviteUrl, listGuilds, getGuild, snapshot, runActions, DESTRUCTIVE, ACTION_TYPES, membersIntentMissing } from "./discord.js";
+import { client, startBot, inviteUrl, listGuilds, getGuild, snapshot, runActions, DESTRUCTIVE, ACTION_TYPES, membersIntentMissing, contentIntentMissing } from "./discord.js";
 import { plan, providerInfo } from "./ai.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -71,7 +71,9 @@ app.get("/api/status", (req, res) => {
     botError,
     botWarning: membersIntentMissing
       ? "Server Members Intent is off so welcomes and autoroles won't fire. Turn it on in the Developer Portal → Bot, then restart."
-      : null,
+      : contentIntentMissing
+        ? "Message Content Intent is off so ticket transcripts won't have message text. Turn it on in the Developer Portal → Bot, then restart."
+        : null,
     bot: client?.user ? { tag: client.user.tag, avatar: client.user.displayAvatarURL({ size: 128 }) } : null,
     invite: inviteUrl(),
     ai: providerInfo(),

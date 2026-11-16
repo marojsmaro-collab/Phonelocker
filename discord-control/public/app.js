@@ -15,6 +15,9 @@ const state = {
 const SUGGESTIONS = [
   "Set up auto moderation",
   "Welcome new people with a pfp card",
+  "Make a ticket system for support",
+  "Turn on leveling with role rewards",
+  "Make a self roles panel for pings",
   "Make a general channel with emojis",
   "Set up a full gaming server",
   "Add Owner, Admin, Mod and Member roles with colors",
@@ -201,8 +204,14 @@ function renderLayout() {
     const live = f.automod.filter((r) => r.enabled);
     parts.push(row("🛡️", "AutoMod", live.length ? `${live.length} rule${live.length === 1 ? "" : "s"}` : "off", live.length > 0));
     for (const r of live) parts.push(h("div", { class: "subfeat" }, r.name));
+    parts.push(row("🎫", "Tickets", f.tickets ? `${f.tickets.opened} opened` : "off", Boolean(f.tickets)));
+    parts.push(row("⭐", "Leveling", f.leveling?.enabled ? `${f.leveling.members} ranked` : "off", f.leveling?.enabled));
+    for (const r of f.leveling?.enabled ? f.leveling.rewards : []) parts.push(h("div", { class: "subfeat" }, `lvl ${r.level} → ${r.role}`));
+    parts.push(row("💬", "Bot status", f.botStatus || "none", Boolean(f.botStatus)));
     if (!f.membersIntent) {
       parts.push(h("div", { class: "warnbox" }, "Turn on Server Members Intent in the Discord Developer Portal → Bot so welcomes and autoroles work. Then restart the bot."));
+    } else if (f.contentIntent === false) {
+      parts.push(h("div", { class: "warnbox" }, "Turn on Message Content Intent in the Discord Developer Portal → Bot so ticket transcripts include messages. Then restart the bot."));
     }
   }
   parts.push(h("h4", {}, "Channels"));
@@ -248,7 +257,7 @@ function history() {
 }
 
 function botAvatar() {
-  return state.status?.bot?.avatar ? h("img", { src: state.status.bot.avatar, alt: "" }) : "🤖";
+  return h("img", { src: state.status?.bot?.avatar || "logo.png", alt: "" });
 }
 
 function messageEl(m) {

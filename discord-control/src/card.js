@@ -160,3 +160,89 @@ export async function renderWelcomeCard(opts = {}) {
 
   return encode(img);
 }
+
+/**
+ * Rank card for /rank. Returns a PNG Buffer.
+ * opts: { avatarUrl, name, level, rank, xp, need, color }
+ */
+export async function renderRankCard(opts = {}) {
+  await loadFont();
+  const RW = 934, RH = 282;
+  const color = hex(opts.color, "#5865f2");
+  const img = PImage.make(RW, RH);
+  const ctx = img.getContext("2d");
+
+  const g = ctx.createLinearGradient(0, 0, RW, RH);
+  g.addColorStop(0, "#14082b");
+  g.addColorStop(1, shade(color, -0.45));
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, RW, RH);
+  ctx.fillStyle = "rgba(255,255,255,0.05)";
+  ctx.beginPath();
+  ctx.arc(860, 40, 120, 0, Math.PI * 2);
+  ctx.closePath();
+  ctx.fill();
+
+  // avatar
+  const cx = 141, cy = 141, r = 92;
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r + 8, 0, Math.PI * 2);
+  ctx.closePath();
+  ctx.fill();
+  const avatar = await fetchBitmap(opts.avatarUrl);
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.closePath();
+  ctx.clip();
+  if (avatar) ctx.drawImage(avatar, 0, 0, avatar.width, avatar.height, cx - r, cy - r, r * 2, r * 2);
+  else {
+    ctx.fillStyle = shade(color, -0.3);
+    ctx.fillRect(cx - r, cy - r, r * 2, r * 2);
+  }
+  ctx.restore();
+
+  const level = Number(opts.level) || 0;
+  const xp = Math.max(0, Number(opts.xp) || 0);
+  const need = Math.max(1, Number(opts.need) || 100);
+
+  // name
+  ctx.textAlign = "left";
+  const name = clean(opts.name) || "someone";
+  fitText(ctx, name, 380, 26, 14);
+  shadowText(ctx, name, 270, 150, "#ffffff");
+
+  // rank + level (top right)
+  ctx.textAlign = "right";
+  ctx.font = `30pt ${FONT}`;
+  shadowText(ctx, `LVL ${level}`, 890, 80, shade(color, 0.6));
+  ctx.font = `18pt ${FONT}`;
+  shadowText(ctx, `RANK #${opts.rank ?? "?"}`, 890, 118, "rgba(255,255,255,0.85)");
+
+  // xp text
+  ctx.font = `15pt ${FONT}`;
+  shadowText(ctx, `${xp} / ${need} XP`, 890, 166, "rgba(255,255,255,0.85)");
+
+  // progress bar
+  const bx = 270, by = 190, bw = 620, bh = 36, br = bh / 2;
+  const bar = (w, fill) => {
+    if (w <= 0) return;
+    ctx.fillStyle = fill;
+    ctx.beginPath();
+    ctx.arc(bx + br, by + br, br, 0, Math.PI * 2);
+    ctx.closePath();
+    ctx.fill();
+    if (w > bh) {
+      ctx.fillRect(bx + br, by, w - bh, bh);
+      ctx.beginPath();
+      ctx.arc(bx + w - br, by + br, br, 0, Math.PI * 2);
+      ctx.closePath();
+      ctx.fill();
+    }
+  };
+  bar(bw, "rgba(255,255,255,0.15)");
+  bar(Math.max(bh, Math.round((bw * Math.min(xp, need)) / need)), shade(color, 0.25));
+
+  return encode(img);
+}

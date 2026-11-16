@@ -17,12 +17,18 @@ categories, channels, roles, permissions, messages and emojis live.
 - **AutoMod**: sets up Discord's own AutoMod (bad words, slurs, links, invites, spam, mention spam, auto timeouts).
   It runs on Discord's side so it keeps working even when the bot is offline
 - **Mod log**: logs mod actions and AutoMod alerts to a channel
+- **Tickets**: a panel with an "Open a ticket" button that makes a private channel for the member and staff,
+  with a Close button that saves a transcript to a log channel
+- **Self roles**: a panel of buttons people tap to get or remove roles (pings, games, colors)
+- **Leveling**: XP for chatting, level up messages, reward roles, `/rank` cards and `/leaderboard`
+- **Bot profile**: sets its own pfp from `assets/bot-avatar.png` and a custom status you can change by chatting
 - **Mod commands** inside Discord (only staff can see them): `/ban` `/unban` `/kick` `/timeout` `/untimeout`
-  `/warn` `/warnings` `/clearwarns` `/purge` `/lock` `/unlock` `/slowmode`
+  `/warn` `/warnings` `/clearwarns` `/purge` `/lock` `/unlock` `/slowmode`. Everyone gets `/rank` `/leaderboard` `/help`
 - Shows the live server layout and which bot features are on next to the chat
 - Asks you to confirm before deleting anything
 
-Try: "set up auto moderation", "welcome new people with a pfp card", "give everyone who joins the Member role".
+Try: "set up auto moderation", "welcome new people with a pfp card", "make a ticket system for support",
+"turn on leveling with role rewards", "make a self roles panel for pings".
 
 ## 1. Reset your bot token first
 
@@ -30,12 +36,13 @@ If your token was ever pasted anywhere (chat, Discord, GitHub), reset it:
 [Discord Developer Portal](https://discord.com/developers/applications) → your app → **Bot** → **Reset Token**.
 Only put the new token in `.env`. Never commit it.
 
-### Turn on Server Members Intent (for welcomes and autoroles)
+### Turn on the two intents
 
 [Discord Developer Portal](https://discord.com/developers/applications) → your app → **Bot** → scroll to
-**Privileged Gateway Intents** → turn on **Server Members Intent** → **Save Changes** → restart the bot.
+**Privileged Gateway Intents** → turn on **Server Members Intent** (welcomes, autoroles) and **Message Content Intent**
+(full ticket transcripts) → **Save Changes** → restart the bot.
 
-Everything else works without it. The website shows a yellow warning while it's off.
+Everything else works without them. The website shows a yellow warning while one is off.
 
 ## 2. Get a free AI key (pick one)
 
@@ -114,5 +121,8 @@ uploading the `.env` file.
 
 `src/server.js` runs the website and API. `src/ai.js` sends your message plus the current server layout to the AI,
 which answers with a plan (a list of actions). `src/discord.js` runs those actions with discord.js.
-`src/features.js` has the welcome, AutoMod and mod command logic, `src/card.js` draws welcome cards in pure JavaScript
-(so it works on Termux too), and settings are saved in `data/config.json`.
+`src/features.js` has the welcome, AutoMod and mod command logic, `src/extras.js` has tickets, self roles, leveling
+and the bot's profile, `src/card.js` draws welcome and rank cards in pure JavaScript (so it works on Termux too), and
+settings are saved in `data/config.json`.
+
+If a free AI tier hits its limit, the bot waits a moment and retries, then tries a lighter model from the same provider.

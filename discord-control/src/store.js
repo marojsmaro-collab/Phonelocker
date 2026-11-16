@@ -15,18 +15,29 @@ try {
 }
 
 let timer = null;
-function persist() {
+function writeNow() {
   clearTimeout(timer);
-  timer = setTimeout(() => {
-    try {
-      fs.mkdirSync(DIR, { recursive: true });
-      const tmp = `${FILE}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
-      fs.renameSync(tmp, FILE);
-    } catch (err) {
-      console.error("Could not save settings:", err.message);
-    }
-  }, 200);
+  timer = null;
+  try {
+    fs.mkdirSync(DIR, { recursive: true });
+    const tmp = `${FILE}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(data));
+    fs.renameSync(tmp, FILE);
+  } catch (err) {
+    console.error("Could not save settings:", err.message);
+  }
+}
+
+function persist() {
+  if (!timer) timer = setTimeout(writeNow, 1000);
+}
+
+// Save anything pending when the bot is stopped (Ctrl+C in Termux).
+for (const sig of ["SIGINT", "SIGTERM"]) {
+  process.once(sig, () => {
+    if (timer) writeNow();
+    process.exit(0);
+  });
 }
 
 export function getConfig(guildId) {

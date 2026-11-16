@@ -35,9 +35,15 @@ Bot features (you ARE the bot, these make you do things automatically):
   timeout_minutes (auto timeout for blocked words, links and mention spam), alert_channel (channel for alerts), exempt_roles ([roles AutoMod ignores, like staff]),
   custom_message (what the person sees when blocked)
 - disable_automod: no fields. Turns off the bot's AutoMod rules.
+- setup_tickets: channel (where the "Open a ticket" panel goes), category (where ticket channels get made, created if missing), support_roles ([staff roles that see tickets]), log_channel (gets transcripts), title, description, button_label, ticket_message (first message inside a new ticket), color
+- create_role_panel: channel, title, description, color, roles ([{role, label, emoji}], up to 25). Posts buttons people tap to get or remove roles. The roles must exist first (create_role before it in the same plan).
+- setup_leveling: enabled (bool), channel (where level ups are announced, "same" = where they chatted), message (placeholders {user} {username} {level} {server}), rewards ([{level, role}] roles given at that level), card_color
+- set_bot_status: text, activity ("custom" | "playing" | "watching" | "listening" | "competing"), status ("online" | "idle" | "dnd")
+- set_bot_avatar: image_url (changes the bot's own pfp)
 
-The bot also has moderation slash commands people use inside Discord (only staff can see them):
-/ban /unban /kick /timeout /untimeout /warn /warnings /clearwarns /purge /lock /unlock /slowmode
+The bot also has slash commands people use inside Discord.
+Staff only: /ban /unban /kick /timeout /untimeout /warn /warnings /clearwarns /purge /lock /unlock /slowmode
+Everyone: /rank (level card) /leaderboard /help
 If the owner wants moderation, set up AutoMod plus a mod log channel and tell them about these commands. Never pretend you can add other bots.
 
 Permission names use Discord's names, for example: Administrator, ViewChannel, SendMessages, ReadMessageHistory,
@@ -59,6 +65,9 @@ How to build well:
 - Use the CURRENT SERVER STATE you are given. Use exact existing names when editing, deleting or referencing. Don't recreate things that already exist unless asked.
 - For "set up moderation" or "auto mod": a private mod logs channel if none exists, set_mod_log, then setup_automod with bad_words, slurs, sexual_content, block_invites, anti_spam, max_mentions 5, timeout_minutes 10, exempt staff roles.
 - For welcomes: make a welcome channel if none exists, then setup_welcome, then test_welcome.
+- For tickets: a "create a ticket" style text channel if none exists (everyone can see it but not send messages), a private ticket logs channel, then setup_tickets with the staff roles.
+- For self roles or reaction roles: create the roles if missing (pings like "📢 Announcements Ping", or colors, games, ages), a roles channel if missing, then create_role_panel.
+- For leveling: setup_leveling with a few reward roles (create them first if missing), like level 5, 10, 20, 50.
 - The server state has a "features" section showing what's already on. If features.membersIntent is false, welcomes and autoroles won't fire until the owner turns on Server Members Intent in the Discord Developer Portal (Bot page) and restarts. Tell them that when they set up welcomes or autoroles.
 - If the owner is just chatting or asking a question, reply with "actions": [].
 - If the request is unclear or would wreck the server, ask a short question instead of acting.
@@ -98,11 +107,11 @@ export async function plan({ message, history = [], serverState }) {
 
   const turns = history
     .filter((t) => t && (t.role === "user" || t.role === "assistant") && typeof t.content === "string" && t.content)
-    .slice(-12)
-    .map((t) => ({ role: t.role, content: t.content.slice(0, 4000) }));
+    .slice(-8)
+    .map((t) => ({ role: t.role, content: t.content.slice(0, 2500) }));
 
   const userText =
-    `CURRENT SERVER STATE (JSON):\n${JSON.stringify(serverState)}\n\n` +
+    `CURRENT SERVER STATE (JSON):\n${JSON.stringify(compact(serverState))}\n\n` +
     `OWNER SAYS:\n${message}`;
 
   let raw;
@@ -114,6 +123,32 @@ export async function plan({ message, history = [], serverState }) {
   return normalize(parseJson(raw));
 }
 
+/** Drop ids, links and empty fields so free tier token limits go further. */
+function compact(value) {
+  if (Array.isArray(value)) return value.map(compact);
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) {
+      if (k === "id" || k === "icon" || k === "url" || v === undefined || v === null) continue;
+      if (Array.isArray(v) && v.length === 0) continue;
+      out[k] = compact(v);
+    }
+    return out;
+  }
+  return value;
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const unique = (list) => [...new Set(list.filter(Boolean))];
+
+function retryAfterMs(res, msg) {
+  const h = Number(res.headers.get("retry-after"));
+  if (Number.isFinite(h) && h > 0) return h * 1000;
+  const m = /try again in ([\d.]+)\s*(ms|s)/i.exec(msg || "");
+  if (m) return Number(m[1]) * (m[2].toLowerCase() === "ms" ? 1 : 1000);
+  return 5000;
+}
+
 // ---------- providers ----------
 
 async function callGemini(model, turns, userText) {
@@ -123,62 +158,125 @@ async function callGemini(model, turns, userText) {
     ...turns.map((t) => ({ role: t.role === "assistant" ? "model" : "user", parts: [{ text: t.content }] })),
     { role: "user", parts: [{ text: userText }] },
   ];
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-goog-api-key": key },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
-        contents,
-        generationConfig: { responseMimeType: "application/json", temperature: 0.5 },
-      }),
+  // If the main model is out of free quota, try the lighter one.
+  const models = unique([model, "gemini-flash-lite-latest"]);
+  let lastError;
+  for (const m of models) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(m)}:generateContent`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-goog-api-key": key },
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+            contents,
+            generationConfig: { responseMimeType: "application/json", temperature: 0.5 },
+          }),
+        }
+      );
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        const cand = data?.candidates?.[0];
+        const text = (cand?.content?.parts || [])
+          .filter((p) => !p.thought && typeof p.text === "string")
+          .map((p) => p.text)
+          .join("");
+        if (text) return text;
+        lastError = new Error(`Gemini returned nothing (${cand?.finishReason || data?.promptFeedback?.blockReason || "no reason"}).`);
+        break;
+      }
+      const msg = data?.error?.message || res.statusText;
+      if (res.status === 400 || res.status === 403) throw new Error(`Gemini rejected the request: ${msg}`);
+      if (res.status === 429) {
+        lastError = new Error(`Gemini free limit hit, wait a minute and try again. (${msg})`);
+        const wait = retryAfterMs(res, msg);
+        if (attempt === 0 && wait <= 15000) {
+          await sleep(wait);
+          continue;
+        }
+        break;
+      }
+      if (res.status === 404) {
+        lastError = new Error(`Gemini model "${m}" not found. Set GEMINI_MODEL in .env. (${msg})`);
+        break;
+      }
+      if (res.status >= 500) {
+        lastError = new Error(`Gemini is having issues (${res.status}). Try again in a bit.`);
+        if (attempt === 0) {
+          await sleep(1500);
+          continue;
+        }
+        break;
+      }
+      throw new Error(`Gemini error ${res.status}: ${msg}`);
     }
-  );
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const msg = data?.error?.message || res.statusText;
-    if (res.status === 429) throw new Error(`Gemini free limit hit, wait a minute and try again. (${msg})`);
-    if (res.status === 400 || res.status === 403) throw new Error(`Gemini rejected the request: ${msg}`);
-    if (res.status === 404) throw new Error(`Gemini model "${model}" not found. Set GEMINI_MODEL in .env. (${msg})`);
-    throw new Error(`Gemini error ${res.status}: ${msg}`);
   }
-  const cand = data?.candidates?.[0];
-  const text = (cand?.content?.parts || [])
-    .filter((p) => !p.thought && typeof p.text === "string")
-    .map((p) => p.text)
-    .join("");
-  if (!text) throw new Error(`Gemini returned nothing (${cand?.finishReason || data?.promptFeedback?.blockReason || "no reason"}).`);
-  return text;
+  throw lastError;
 }
 
 async function callGroq(model, turns, userText) {
   const key = process.env.GROQ_API_KEY;
   if (!key) throw new Error("GROQ_API_KEY is missing.");
-  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
-    body: JSON.stringify({
-      model,
-      temperature: 0.5,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        ...turns,
-        { role: "user", content: userText },
-      ],
-    }),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const msg = data?.error?.message || res.statusText;
-    if (res.status === 429) throw new Error(`Groq free limit hit, wait a bit and try again. (${msg})`);
-    if (res.status === 401) throw new Error("Groq says the API key is wrong.");
-    throw new Error(`Groq error ${res.status}: ${msg}`);
+  // Each Groq model has its own free limits, so if one is maxed out we try the next.
+  const models = unique([model, "openai/gpt-oss-20b", "llama-3.3-70b-versatile"]);
+  let lastError;
+  for (const m of models) {
+    let jsonMode = true;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
+        body: JSON.stringify({
+          model: m,
+          temperature: 0.5,
+          ...(jsonMode ? { response_format: { type: "json_object" } } : {}),
+          messages: [{ role: "system", content: SYSTEM_PROMPT }, ...turns, { role: "user", content: userText }],
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        const text = data?.choices?.[0]?.message?.content;
+        if (text) return text;
+        lastError = new Error("Groq returned nothing.");
+        break;
+      }
+      const msg = data?.error?.message || res.statusText;
+      const code = data?.error?.code || "";
+      if (res.status === 401) throw new Error("Groq says the API key is wrong.");
+      if (res.status === 400 && jsonMode && /json/i.test(`${code} ${msg}`)) {
+        jsonMode = false; // the model wrote broken JSON, ask again without strict JSON mode
+        continue;
+      }
+      if (res.status === 429) {
+        lastError = new Error(`Groq free limit hit, wait a bit and try again. (${msg})`);
+        const wait = retryAfterMs(res, msg);
+        if (attempt === 0 && wait <= 15000) {
+          await sleep(wait);
+          continue;
+        }
+        break;
+      }
+      if (res.status === 413) {
+        lastError = new Error("That request is too big for the free Groq limit. Try a shorter message or fewer things at once.");
+        break;
+      }
+      if (res.status === 404 || (res.status === 400 && /model/i.test(msg))) {
+        lastError = new Error(`Groq model "${m}" isn't available. (${msg})`);
+        break;
+      }
+      if (res.status >= 500) {
+        lastError = new Error(`Groq is having issues (${res.status}). Try again in a bit.`);
+        if (attempt === 0) {
+          await sleep(1500);
+          continue;
+        }
+        break;
+      }
+      throw new Error(`Groq error ${res.status}: ${msg}`);
+    }
   }
-  const text = data?.choices?.[0]?.message?.content;
-  if (!text) throw new Error("Groq returned nothing.");
-  return text;
+  throw lastError;
 }
 
 let anthropicClient;

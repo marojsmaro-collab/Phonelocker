@@ -43,7 +43,7 @@ export function findTextChannel(guild, name) {
   return ch;
 }
 
-function findRoleOrThrow(guild, name) {
+export function findRoleOrThrow(guild, name) {
   const role = findIn([...guild.roles.cache.values()].filter((r) => r.id !== guild.id), String(name ?? "").replace(/^@/, ""));
   if (!role) throw new Error(`Could not find role "${name}".`);
   return role;
@@ -347,14 +347,6 @@ export const commands = [
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels),
 ].map((c) => c.setContexts(InteractionContextType.Guild).toJSON());
 
-export async function registerCommands(client) {
-  try {
-    await client.application.commands.set(commands);
-    console.log(`Mod commands ready: ${commands.map((c) => "/" + c.name).join(" ")}`);
-  } catch (err) {
-    console.error("Could not register slash commands:", err.message);
-  }
-}
 
 const COLORS = { ban: 0xf23f43, kick: 0xf0b232, timeout: 0xf0b232, warn: 0xfee75c, ok: 0x23a55a, info: 0x5865f2 };
 

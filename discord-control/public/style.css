@@ -57,7 +57,7 @@ button, input, textarea { font: inherit; color: inherit; }
   background: var(--bg); border: 1px solid #0000; border-radius: 8px; padding: 12px; outline: none;
 }
 .card input:focus { border-color: var(--brand); }
-.logo { font-size: 44px; }
+.logo { width: 112px; height: 112px; border-radius: 28px; margin: 0 auto; display: block; box-shadow: 0 8px 30px #5865f255; }
 
 /* ---------- layout ---------- */
 .app {

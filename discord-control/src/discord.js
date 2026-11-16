@@ -10,7 +10,7 @@ import {
   onMemberJoin,
   onMemberLeave,
   onInteraction,
-  registerCommands,
+  commands as modCommands,
   featureState,
   forgetRuleCache,
   setupAutomod,
@@ -21,21 +21,66 @@ import {
   configureModLog,
   testWelcome,
 } from "./features.js";
+import {
+  extraCommands,
+  handlesCommand,
+  onExtraCommand,
+  onButton,
+  onMessage,
+  createRolePanel,
+  setupTickets,
+  configureLeveling,
+  setBotStatus,
+  setBotAvatar,
+  applyBranding,
+  extraState,
+} from "./extras.js";
 
 /** The live Discord client. Replaced if we have to fall back to fewer intents. */
 export let client = null;
 
-function makeClient(withMembers) {
-  const intents = [GatewayIntentBits.Guilds];
-  // Server Members Intent lets the bot see people join and leave (for welcome cards and autoroles).
-  if (withMembers) intents.push(GatewayIntentBits.GuildMembers);
+async function registerCommands(c) {
+  try {
+    const all = [...modCommands, ...extraCommands];
+    await c.application.commands.set(all);
+    console.log(`Slash commands ready: ${all.map((x) => "/" + x.name).join(" ")}`);
+  } catch (err) {
+    console.error("Could not register slash commands:", err.message);
+  }
+}
+
+function route(i) {
+  if (i.isButton()) return onButton(i);
+  if (i.isChatInputCommand() && handlesCommand(i.commandName)) return onExtraCommand(i);
+  return onInteraction(i);
+}
+
+// Privileged intents are switches in the Developer Portal. We ask for the most we can and step down if they're off.
+const MODES = [
+  { members: true, content: true },
+  { members: true, content: false },
+  { members: false, content: false },
+];
+
+function makeClient(mode) {
+  const intents = [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages];
+  if (mode.members) intents.push(GatewayIntentBits.GuildMembers); // see people join and leave
+  if (mode.content) intents.push(GatewayIntentBits.MessageContent); // full ticket transcripts
   const c = new Client({ intents, partials: [Partials.GuildMember, Partials.User] });
+  const safe = (label, fn) => (...args) =>
+    Promise.resolve()
+      .then(() => fn(...args))
+      .catch((e) => console.error(`${label}:`, e?.message || e));
   c.on("error", (e) => console.error("Discord client error:", e.message));
   c.on("guildCreate", (g) => console.log(`Joined server: ${g.name}`));
-  c.on("guildMemberAdd", (m) => onMemberJoin(m).catch((e) => console.error("Join handler:", e.message)));
-  c.on("guildMemberRemove", (m) => onMemberLeave(m).catch((e) => console.error("Leave handler:", e.message)));
-  c.on("interactionCreate", (i) => onInteraction(i).catch((e) => console.error("Command handler:", e.message)));
-  c.once("clientReady", () => registerCommands(c));
+  c.on("guildMemberAdd", safe("Join handler", onMemberJoin));
+  c.on("guildMemberRemove", safe("Leave handler", onMemberLeave));
+  c.on("messageCreate", safe("Leveling", onMessage));
+  c.on("interactionCreate", safe("Interaction", route));
+  c.once("clientReady", () => {
+    registerCommands(c);
+    applyBranding(c);
+  });
   return c;
 }
 
@@ -50,7 +95,7 @@ function loginOnce(c, token) {
       c.off("shardError", onError);
       fn(v);
     };
-    const disallowed = () => Object.assign(new Error("Server Members Intent is off"), { code: "DisallowedIntents" });
+    const disallowed = () => Object.assign(new Error("A privileged intent is off"), { code: "DisallowedIntents" });
     const onClose = (ev) => ev?.code === 4014 && finish(reject, disallowed());
     const onError = (e) => /disallowed intents/i.test(e?.message || "") && finish(reject, disallowed());
     c.on("shardDisconnect", onClose);
@@ -62,20 +107,26 @@ function loginOnce(c, token) {
 }
 
 export let membersIntentMissing = false;
+export let contentIntentMissing = false;
 
 export async function startBot(token) {
-  client = makeClient(true);
-  try {
-    await loginOnce(client, token);
-    membersIntentMissing = false;
-  } catch (err) {
-    if (err.code !== "DisallowedIntents") throw err;
-    console.warn("Server Members Intent is off, so welcome cards and autoroles won't fire.");
-    console.warn("Turn it on: Discord Developer Portal → your app → Bot → Server Members Intent → Save, then restart.");
-    await client.destroy().catch(() => {});
-    client = makeClient(false);
-    membersIntentMissing = true;
-    await loginOnce(client, token);
+  for (let i = 0; i < MODES.length; i++) {
+    const mode = MODES[i];
+    client = makeClient(mode);
+    try {
+      await loginOnce(client, token);
+      membersIntentMissing = !mode.members;
+      contentIntentMissing = !mode.content;
+      if (membersIntentMissing) console.warn("Server Members Intent is off, so welcome cards and autoroles won't fire.");
+      if (contentIntentMissing) console.warn("Message Content Intent is off, so ticket transcripts won't include message text.");
+      if (membersIntentMissing || contentIntentMissing) {
+        console.warn("Turn them on: Discord Developer Portal → your app → Bot → Privileged Gateway Intents → Save, then restart.");
+      }
+      return client;
+    } catch (err) {
+      await client.destroy().catch(() => {});
+      if (err.code !== "DisallowedIntents" || i === MODES.length - 1) throw err;
+    }
   }
   return client;
 }
@@ -121,7 +172,9 @@ const TYPE_FROM_LABEL = {
 
 /** A compact picture of the server that the AI reads and the website shows. */
 export async function snapshot(guild, opts) {
-  return { ...layout(guild), features: await featureState(guild, opts) };
+  const features = { ...(await featureState(guild, opts)), ...extraState(guild) };
+  features.contentIntent = !contentIntentMissing;
+  return { ...layout(guild), features };
 }
 
 function layout(guild) {
@@ -510,6 +563,26 @@ const handlers = {
   async disable_automod(guild) {
     forgetRuleCache(guild.id);
     return disableAutomod(guild);
+  },
+
+  async create_role_panel(guild, a) {
+    return createRolePanel(guild, a);
+  },
+
+  async setup_tickets(guild, a) {
+    return setupTickets(guild, a);
+  },
+
+  async setup_leveling(guild, a) {
+    return configureLeveling(guild, a);
+  },
+
+  async set_bot_status(guild, a) {
+    return setBotStatus(guild.client, a);
+  },
+
+  async set_bot_avatar(guild, a) {
+    return setBotAvatar(guild.client, a);
   },
 };
 
