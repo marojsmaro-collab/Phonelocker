@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Bot Builder</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🤖</text></svg>" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- Login -->
+  <div id="login" class="overlay hidden">
+    <form id="loginForm" class="card">
+      <div class="logo">🤖</div>
+      <h1>Bot Builder</h1>
+      <p class="muted">Enter your dashboard password</p>
+      <input id="password" type="password" placeholder="Password" autocomplete="current-password" required />
+      <button type="submit" class="btn primary">Let me in</button>
+      <p id="loginError" class="error"></p>
+    </form>
+  </div>
+
+  <div id="app" class="app hidden">
+    <!-- Server rail -->
+    <nav id="rail" class="rail" aria-label="Servers"></nav>
+
+    <!-- Chat -->
+    <main class="chat">
+      <header class="chat-head">
+        <div class="bot-id">
+          <img id="botAvatar" alt="" />
+          <div>
+            <div id="botName" class="bot-name">Connecting…</div>
+            <div id="botSub" class="muted small"></div>
+          </div>
+        </div>
+        <div class="head-right">
+          <span id="serverName" class="server-name"></span>
+          <button id="togglePanel" class="btn ghost small" type="button" title="Show server layout">📋 Layout</button>
+        </div>
+      </header>
+
+      <div id="messages" class="messages" aria-live="polite"></div>
+
+      <div id="chips" class="chips"></div>
+
+      <form id="composer" class="composer">
+        <textarea id="input" rows="1" placeholder="Tell the bot what to build… e.g. make a gaming server with roles and voice chats"></textarea>
+        <button id="send" class="btn primary" type="submit" aria-label="Send">➤</button>
+      </form>
+    </main>
+
+    <!-- Server layout -->
+    <aside id="panel" class="panel">
+      <div class="panel-head">
+        <strong>Server layout</strong>
+        <button id="refresh" class="btn ghost small" type="button" title="Refresh">↻</button>
+      </div>
+      <div id="layout" class="layout"></div>
+    </aside>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
