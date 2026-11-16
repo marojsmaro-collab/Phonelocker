@@ -13,6 +13,8 @@ const state = {
 };
 
 const SUGGESTIONS = [
+  "Set up auto moderation",
+  "Welcome new people with a pfp card",
   "Make a general channel with emojis",
   "Set up a full gaming server",
   "Add Owner, Admin, Mod and Member roles with colors",
@@ -102,7 +104,9 @@ function renderStatus() {
   if (s.bot?.avatar) $("botAvatar").src = s.bot.avatar;
   $("botSub").textContent = s.botError
     ? s.botError
-    : s.ai?.provider ? `AI: ${s.ai.provider} · ${s.ai.model}` : "No AI key set. Add one to .env";
+    : s.botWarning
+      ? `⚠️ ${s.botWarning}`
+      : s.ai?.provider ? `AI: ${s.ai.provider} · ${s.ai.model}` : "No AI key set. Add one to .env";
 }
 
 async function loadGuilds() {
@@ -151,10 +155,10 @@ async function selectGuild(id) {
   await refreshServer();
 }
 
-async function refreshServer() {
+async function refreshServer(fresh) {
   if (!state.guildId) return;
   try {
-    const { server } = await api(`/api/guilds/${state.guildId}`);
+    const { server } = await api(`/api/guilds/${state.guildId}${fresh === true ? "?fresh=1" : ""}`);
     state.server = server;
   } catch (err) {
     state.server = null;
@@ -183,6 +187,24 @@ function renderLayout() {
     return;
   }
   const parts = [];
+  const f = s.features;
+  if (f) {
+    parts.push(h("h4", {}, "Bot features"));
+    const row = (icon, label, value, on) =>
+      h("div", { class: "feat" + (on ? " on" : "") }, h("span", { class: "ico" }, icon), h("span", {}, label), h("span", { class: "val" }, value));
+    parts.push(
+      row("👋", "Welcome", f.welcome?.enabled ? `#${f.welcome.channel}${f.welcome.card ? " + card" : ""}` : "off", f.welcome?.enabled),
+      row("🚪", "Goodbye", f.goodbye?.enabled ? `#${f.goodbye.channel}` : "off", f.goodbye?.enabled),
+      row("🎭", "Autoroles", f.autoroles.length ? f.autoroles.join(", ") : "none", f.autoroles.length > 0),
+      row("📝", "Mod log", f.modLog ? `#${f.modLog}` : "off", Boolean(f.modLog)),
+    );
+    const live = f.automod.filter((r) => r.enabled);
+    parts.push(row("🛡️", "AutoMod", live.length ? `${live.length} rule${live.length === 1 ? "" : "s"}` : "off", live.length > 0));
+    for (const r of live) parts.push(h("div", { class: "subfeat" }, r.name));
+    if (!f.membersIntent) {
+      parts.push(h("div", { class: "warnbox" }, "Turn on Server Members Intent in the Discord Developer Portal → Bot so welcomes and autoroles work. Then restart the bot."));
+    }
+  }
   parts.push(h("h4", {}, "Channels"));
   for (const c of s.uncategorized) parts.push(channelRow(c));
   for (const cat of s.categories) {
@@ -210,7 +232,7 @@ function renderLayout() {
   box.replaceChildren(...parts);
 }
 
-$("refresh").addEventListener("click", refreshServer);
+$("refresh").addEventListener("click", () => refreshServer(true));
 $("togglePanel").addEventListener("click", () => $("panel").classList.toggle("open"));
 document.addEventListener("click", (e) => {
   const panel = $("panel");

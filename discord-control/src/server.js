@@ -3,7 +3,7 @@ import express from "express";
 import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { client, startBot, inviteUrl, listGuilds, getGuild, snapshot, runActions, DESTRUCTIVE, ACTION_TYPES } from "./discord.js";
+import { client, startBot, inviteUrl, listGuilds, getGuild, snapshot, runActions, DESTRUCTIVE, ACTION_TYPES, membersIntentMissing } from "./discord.js";
 import { plan, providerInfo } from "./ai.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -60,16 +60,19 @@ const wrap = (fn) => (req, res) =>
   });
 
 function requireBot(res) {
-  if (client.isReady()) return true;
+  if (client?.isReady()) return true;
   res.status(503).json({ error: botError ? `Bot failed to log in: ${botError}` : "Bot is still connecting..." });
   return false;
 }
 
 app.get("/api/status", (req, res) => {
   res.json({
-    botReady: client.isReady(),
+    botReady: Boolean(client?.isReady()),
     botError,
-    bot: client.user ? { tag: client.user.tag, avatar: client.user.displayAvatarURL({ size: 128 }) } : null,
+    botWarning: membersIntentMissing
+      ? "Server Members Intent is off so welcomes and autoroles won't fire. Turn it on in the Developer Portal → Bot, then restart."
+      : null,
+    bot: client?.user ? { tag: client.user.tag, avatar: client.user.displayAvatarURL({ size: 128 }) } : null,
     invite: inviteUrl(),
     ai: providerInfo(),
   });
@@ -83,7 +86,7 @@ app.get("/api/guilds", (req, res) => {
 app.get("/api/guilds/:id", wrap(async (req, res) => {
   if (!requireBot(res)) return;
   const guild = getGuild(req.params.id);
-  res.json({ server: snapshot(guild) });
+  res.json({ server: await snapshot(guild, { fresh: req.query.fresh === "1" }) });
 }));
 
 app.post("/api/guilds/:id/chat", wrap(async (req, res) => {
@@ -93,7 +96,7 @@ app.post("/api/guilds/:id/chat", wrap(async (req, res) => {
   if (!message) return res.status(400).json({ error: "Say something first." });
   const history = Array.isArray(req.body?.history) ? req.body.history : [];
 
-  const { reply, actions } = await plan({ message, history, serverState: snapshot(guild) });
+  const { reply, actions } = await plan({ message, history, serverState: await snapshot(guild) });
 
   const destructive = actions.filter((a) => DESTRUCTIVE.has(a.type));
   if (destructive.length && !req.body?.skipConfirm) {
@@ -101,7 +104,7 @@ app.post("/api/guilds/:id/chat", wrap(async (req, res) => {
   }
 
   const results = actions.length ? await runActions(guild, actions) : [];
-  res.json({ reply, actions, results, server: snapshot(guild) });
+  res.json({ reply, actions, results, server: await snapshot(guild, { fresh: true }) });
 }));
 
 app.post("/api/guilds/:id/execute", wrap(async (req, res) => {
@@ -111,7 +114,7 @@ app.post("/api/guilds/:id/execute", wrap(async (req, res) => {
     .filter((a) => a && ACTION_TYPES.includes(a.type))
     .slice(0, 80);
   const results = await runActions(guild, actions);
-  res.json({ results, server: snapshot(guild) });
+  res.json({ results, server: await snapshot(guild, { fresh: true }) });
 }));
 
 app.use("/api", (req, res) => res.status(404).json({ error: "Not found." }));
@@ -121,9 +124,6 @@ app.use("/api", (req, res) => res.status(404).json({ error: "Not found." }));
 app.listen(PORT, () => {
   console.log(`Dashboard running at http://localhost:${PORT}`);
 });
-
-client.on("guildCreate", (g) => console.log(`Joined server: ${g.name}`));
-client.on("error", (e) => console.error("Discord client error:", e.message));
 
 startBot(TOKEN)
   .then((c) => {

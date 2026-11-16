@@ -172,6 +172,13 @@ button, input, textarea { font: inherit; color: inherit; }
 .emojis { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 8px; }
 .emojis img { width: 28px; height: 28px; }
 .layout .none { padding: 4px 8px; color: var(--faint); font-size: 13px; }
+.feat { display: flex; align-items: center; gap: 8px; padding: 5px 8px; color: var(--faint); }
+.feat .ico { width: 18px; text-align: center; flex: none; }
+.feat .val { margin-left: auto; font-size: 12.5px; max-width: 55%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.feat.on { color: var(--text); }
+.feat.on .val { color: var(--green); }
+.subfeat { padding: 2px 8px 2px 34px; font-size: 12.5px; color: var(--muted); }
+.warnbox { margin: 8px; padding: 8px 10px; border-radius: 8px; background: #f0b23222; border: 1px solid #f0b23266; color: #f6d38a; font-size: 12.5px; }
 
 /* ---------- phone ---------- */
 @media (max-width: 900px) {

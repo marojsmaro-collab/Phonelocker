@@ -12,9 +12,17 @@ categories, channels, roles, permissions, messages and emojis live.
 - Set channel permissions per role (private staff channels and so on)
 - Add custom emojis from an image link, delete emojis
 - Send messages and embeds (welcome, rules)
-- Rename the server
-- Shows the live server layout next to the chat
+- Rename the server and change its icon
+- **Welcome cards**: posts a welcome image with the new member's pfp, plus goodbye messages and autoroles
+- **AutoMod**: sets up Discord's own AutoMod (bad words, slurs, links, invites, spam, mention spam, auto timeouts).
+  It runs on Discord's side so it keeps working even when the bot is offline
+- **Mod log**: logs mod actions and AutoMod alerts to a channel
+- **Mod commands** inside Discord (only staff can see them): `/ban` `/unban` `/kick` `/timeout` `/untimeout`
+  `/warn` `/warnings` `/clearwarns` `/purge` `/lock` `/unlock` `/slowmode`
+- Shows the live server layout and which bot features are on next to the chat
 - Asks you to confirm before deleting anything
+
+Try: "set up auto moderation", "welcome new people with a pfp card", "give everyone who joins the Member role".
 
 ## 1. Reset your bot token first
 
@@ -22,7 +30,12 @@ If your token was ever pasted anywhere (chat, Discord, GitHub), reset it:
 [Discord Developer Portal](https://discord.com/developers/applications) → your app → **Bot** → **Reset Token**.
 Only put the new token in `.env`. Never commit it.
 
-No privileged intents are needed.
+### Turn on Server Members Intent (for welcomes and autoroles)
+
+[Discord Developer Portal](https://discord.com/developers/applications) → your app → **Bot** → scroll to
+**Privileged Gateway Intents** → turn on **Server Members Intent** → **Save Changes** → restart the bot.
+
+Everything else works without it. The website shows a yellow warning while it's off.
 
 ## 2. Get a free AI key (pick one)
 
@@ -49,6 +62,24 @@ Open http://localhost:3000 and log in with your `DASHBOARD_PASSWORD`.
 
 The terminal prints an invite link. Open it to add the bot to your server (it asks for Administrator so it can
 build anything). Then hit ↻ on the site.
+
+## Run it on Android (Termux)
+
+Install Termux from [F-Droid](https://f-droid.org/packages/com.termux), open it, and paste:
+
+```bash
+pkg update -y && pkg install -y nodejs unzip
+cd ~ && curl -L -o bot.zip https://github.com/marojsmaro-collab/Phonelocker/archive/refs/heads/claude/discord-bot-control-site-u87a9o.zip && unzip -o bot.zip && cp -r Phonelocker-*/discord-control ~/ && cd ~/discord-control && cp -n .env.example .env
+```
+
+Fill in `~/discord-control/.env` (for example with `nano .env`), then `npm install && npm start`.
+Open `localhost:3000` in Chrome. Pull down the Termux notification and tap **Acquire wakelock** so Android doesn't kill it.
+
+**Update to the newest version** (keeps your `.env` and settings):
+
+```bash
+cd ~ && rm -rf Phonelocker-* bot.zip && curl -L -o bot.zip https://github.com/marojsmaro-collab/Phonelocker/archive/refs/heads/claude/discord-bot-control-site-u87a9o.zip && unzip -o bot.zip && cp -r Phonelocker-*/discord-control ~/ && cd ~/discord-control && npm install && npm start
+```
 
 ## 4. Host it for free (optional)
 
@@ -83,3 +114,5 @@ uploading the `.env` file.
 
 `src/server.js` runs the website and API. `src/ai.js` sends your message plus the current server layout to the AI,
 which answers with a plan (a list of actions). `src/discord.js` runs those actions with discord.js.
+`src/features.js` has the welcome, AutoMod and mod command logic, `src/card.js` draws welcome cards in pure JavaScript
+(so it works on Termux too), and settings are saved in `data/config.json`.

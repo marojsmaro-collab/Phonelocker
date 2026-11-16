@@ -12,8 +12,10 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.8.0",
+    "@expo-google-fonts/luckiest-guy": "^0.4.1",
     "discord.js": "^14.28.1",
     "dotenv": "^16.4.5",
-    "express": "^4.21.1"
+    "express": "^4.21.1",
+    "pureimage": "^0.4.20"
   }
 }

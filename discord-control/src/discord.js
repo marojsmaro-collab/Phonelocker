@@ -4,22 +4,84 @@ import {
   ChannelType,
   PermissionFlagsBits,
   OverwriteType,
+  Partials,
 } from "discord.js";
+import {
+  onMemberJoin,
+  onMemberLeave,
+  onInteraction,
+  registerCommands,
+  featureState,
+  forgetRuleCache,
+  setupAutomod,
+  disableAutomod,
+  configureWelcome,
+  configureGoodbye,
+  configureAutoroles,
+  configureModLog,
+  testWelcome,
+} from "./features.js";
 
-export const client = new Client({
-  // Guilds is enough to see channels, roles and emojis. No privileged intents needed.
-  intents: [GatewayIntentBits.Guilds],
-});
+/** The live Discord client. Replaced if we have to fall back to fewer intents. */
+export let client = null;
 
-export function startBot(token) {
+function makeClient(withMembers) {
+  const intents = [GatewayIntentBits.Guilds];
+  // Server Members Intent lets the bot see people join and leave (for welcome cards and autoroles).
+  if (withMembers) intents.push(GatewayIntentBits.GuildMembers);
+  const c = new Client({ intents, partials: [Partials.GuildMember, Partials.User] });
+  c.on("error", (e) => console.error("Discord client error:", e.message));
+  c.on("guildCreate", (g) => console.log(`Joined server: ${g.name}`));
+  c.on("guildMemberAdd", (m) => onMemberJoin(m).catch((e) => console.error("Join handler:", e.message)));
+  c.on("guildMemberRemove", (m) => onMemberLeave(m).catch((e) => console.error("Leave handler:", e.message)));
+  c.on("interactionCreate", (i) => onInteraction(i).catch((e) => console.error("Command handler:", e.message)));
+  c.once("clientReady", () => registerCommands(c));
+  return c;
+}
+
+function loginOnce(c, token) {
   return new Promise((resolve, reject) => {
-    client.once("clientReady", () => resolve(client));
-    client.login(token).catch(reject);
+    let done = false;
+    const finish = (fn, v) => {
+      if (done) return;
+      done = true;
+      c.off("shardDisconnect", onClose);
+      c.off("error", onError);
+      c.off("shardError", onError);
+      fn(v);
+    };
+    const disallowed = () => Object.assign(new Error("Server Members Intent is off"), { code: "DisallowedIntents" });
+    const onClose = (ev) => ev?.code === 4014 && finish(reject, disallowed());
+    const onError = (e) => /disallowed intents/i.test(e?.message || "") && finish(reject, disallowed());
+    c.on("shardDisconnect", onClose);
+    c.on("error", onError);
+    c.on("shardError", onError);
+    c.once("clientReady", () => finish(resolve, c));
+    c.login(token).catch((e) => finish(reject, /disallowed intents/i.test(e?.message || "") ? disallowed() : e));
   });
 }
 
+export let membersIntentMissing = false;
+
+export async function startBot(token) {
+  client = makeClient(true);
+  try {
+    await loginOnce(client, token);
+    membersIntentMissing = false;
+  } catch (err) {
+    if (err.code !== "DisallowedIntents") throw err;
+    console.warn("Server Members Intent is off, so welcome cards and autoroles won't fire.");
+    console.warn("Turn it on: Discord Developer Portal → your app → Bot → Server Members Intent → Save, then restart.");
+    await client.destroy().catch(() => {});
+    client = makeClient(false);
+    membersIntentMissing = true;
+    await loginOnce(client, token);
+  }
+  return client;
+}
+
 export function inviteUrl() {
-  if (!client.user) return null;
+  if (!client?.user) return null;
   // permissions=8 is Administrator so the bot can build anything.
   return `https://discord.com/oauth2/authorize?client_id=${client.user.id}&permissions=8&scope=bot%20applications.commands`;
 }
@@ -58,7 +120,11 @@ const TYPE_FROM_LABEL = {
 };
 
 /** A compact picture of the server that the AI reads and the website shows. */
-export function snapshot(guild) {
+export async function snapshot(guild, opts) {
+  return { ...layout(guild), features: await featureState(guild, opts) };
+}
+
+function layout(guild) {
   const channels = [...guild.channels.cache.values()].filter((c) => !c.isThread());
   const byPos = (a, b) => a.rawPosition - b.rawPosition;
 
@@ -406,6 +472,44 @@ const handlers = {
     if (!a.name) throw new Error("No new server name given.");
     await guild.setName(a.name);
     return `Renamed the server to ${a.name}`;
+  },
+
+  async set_server_icon(guild, a) {
+    if (!a.image_url || !/^https?:\/\//i.test(a.image_url)) throw new Error("Server icons need an image link.");
+    await guild.setIcon(a.image_url);
+    return "Updated the server icon";
+  },
+
+  // ----- bot features -----
+
+  async setup_welcome(guild, a) {
+    return configureWelcome(guild, a);
+  },
+
+  async setup_goodbye(guild, a) {
+    return configureGoodbye(guild, a);
+  },
+
+  async set_autoroles(guild, a) {
+    return configureAutoroles(guild, a);
+  },
+
+  async test_welcome(guild) {
+    return testWelcome(guild);
+  },
+
+  async set_mod_log(guild, a) {
+    return configureModLog(guild, a);
+  },
+
+  async setup_automod(guild, a) {
+    forgetRuleCache(guild.id);
+    return setupAutomod(guild, a);
+  },
+
+  async disable_automod(guild) {
+    forgetRuleCache(guild.id);
+    return disableAutomod(guild);
   },
 };
 
