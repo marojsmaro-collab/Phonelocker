@@ -216,6 +216,10 @@ app.get("/api/guilds/:id", wrap(async (req, res) => {
 
 // ---------------------------------------------------------------- routes: AI builder
 
+// The AI can take a while on free tiers, so planning runs in the background and the site polls for
+// live status ("asking Gemini…", "writing the plan…") instead of waiting on one long request.
+const thinks = new Map();
+
 app.post("/api/guilds/:id/chat", wrap(async (req, res) => {
   if (!requireBot(res)) return;
   const guild = getGuild(req.params.id);
@@ -224,18 +228,43 @@ app.post("/api/guilds/:id/chat", wrap(async (req, res) => {
   if (!message) return res.status(400).json({ error: "Say something first." });
   const history = Array.isArray(req.body?.history) ? req.body.history : [];
 
-  const out = await plan({ message, history, serverState: await aiState(guild), memory: memoryOf(guild.id), allowedTypes: ACTION_TYPES });
-  remember(guild.id, out.remember);
+  const t = { id: crypto.randomBytes(6).toString("hex"), status: "thinking", text: "👀 Reading your server…", startedAt: Date.now() };
+  thinks.set(t.id, t);
+  for (const [id, x] of thinks) if (Date.now() - x.startedAt > 30 * 60 * 1000) thinks.delete(id);
+  res.json({ thinkId: t.id });
 
-  if (out.questions.length || !out.actions.length) {
-    return res.json({ reply: out.reply, questions: out.questions, actions: [] });
+  console.log(`[AI] Owner: ${message.slice(0, 120)}`);
+  try {
+    const out = await plan({
+      message,
+      history,
+      serverState: await aiState(guild),
+      memory: memoryOf(guild.id),
+      allowedTypes: ACTION_TYPES,
+      onStatus: (text) => (t.text = text),
+    });
+    remember(guild.id, out.remember);
+    if (out.questions.length || !out.actions.length) t.result = { reply: out.reply, questions: out.questions, actions: [] };
+    else if (out.actions.some((a) => DESTRUCTIVE.has(a.type))) t.result = { reply: out.reply, actions: out.actions, needsConfirm: true };
+    else if (busy.has(guild.id)) t.result = { reply: `${out.reply}\n\n(Another build is still running, try again in a sec.)`, actions: [] };
+    else {
+      const job = startJob(guild, message, out.actions);
+      t.result = { reply: out.reply, actions: out.actions, jobId: job.id };
+    }
+    console.log(`[AI] Plan ready: ${out.actions.length} action(s), ${out.questions.length} question(s)`);
+    t.status = "done";
+  } catch (err) {
+    console.error(`[AI] Failed: ${err.message}`);
+    t.error = err.message;
+    t.status = "error";
   }
-  if (out.actions.some((a) => DESTRUCTIVE.has(a.type))) {
-    return res.json({ reply: out.reply, actions: out.actions, needsConfirm: true });
-  }
-  const job = startJob(guild, message, out.actions);
-  res.json({ reply: out.reply, actions: out.actions, jobId: job.id });
 }));
+
+app.get("/api/think/:id", (req, res) => {
+  const t = thinks.get(req.params.id);
+  if (!t) return res.status(404).json({ error: "That message expired. Send it again." });
+  res.json({ status: t.status, text: t.text, seconds: Math.round((Date.now() - t.startedAt) / 1000), result: t.result || null, error: t.error || null });
+});
 
 app.post("/api/guilds/:id/execute", wrap(async (req, res) => {
   if (!requireBot(res)) return;

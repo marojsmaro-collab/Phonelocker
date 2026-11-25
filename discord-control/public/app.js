@@ -149,8 +149,13 @@ async function loadGuilds() {
 
 const initials = (name) => name.split(/\s+/).map((w) => [...w][0] || "").join("").slice(0, 3);
 
+/** replaceChildren that skips empty bits instead of printing "null". */
+function put(el, ...kids) {
+  el.replaceChildren(...kids.flat(Infinity).filter((k) => k != null && k !== false));
+}
+
 function renderRail() {
-  $("rail").replaceChildren(
+  put($("rail"),
     ...state.guilds.map((g) =>
       h("button", { class: "guild" + (g.id === state.guildId ? " active" : ""), title: g.name, type: "button", onclick: () => selectGuild(g.id) },
         g.icon ? h("img", { src: g.icon, alt: "" }) : initials(g.name))
@@ -248,7 +253,7 @@ function renderView() {
   view.className = "view scroll";
   if (!state.server) return view.replaceChildren(h("div", { class: "empty" }, h("div", { class: "big" }, "⏳"), h("p", {}, "Loading server…")));
   const page = PAGES[state.tab];
-  view.replaceChildren(...(page ? page() : []));
+  put(view, page ? page() : []);
 }
 
 // =====================================================================
@@ -311,7 +316,9 @@ function messageEl(m) {
     h("div", { class: "avatar" }, isUser ? "🙂" : botAvatar()),
     h("div", { class: "body" },
       h("div", { class: "who" }, isUser ? "You" : (state.status?.bot?.tag || "Bot").split("#")[0]),
-      m.typing ? h("div", { class: "typing" }, h("span"), h("span"), h("span")) : h("div", { class: "text" }, m.text),
+      m.typing
+        ? h("div", {}, h("div", { class: "typing" }, h("span"), h("span"), h("span")), m.status ? h("div", { class: "muted small" }, `${m.status}${m.seconds ? ` · ${m.seconds}s` : ""}`) : null)
+        : h("div", { class: "text" }, m.text),
       m.questions?.length ? questionsEl(m) : null,
       m.confirm ? confirmEl(m) : null,
       m.jobId ? jobEl(m) : null,
@@ -440,7 +447,17 @@ async function send(text) {
   chat().push(pending);
   renderMessages();
   try {
-    const data = await api(`/api/guilds/${guildId}/chat`, { method: "POST", body: { message: text, history: prior } });
+    const { thinkId } = await api(`/api/guilds/${guildId}/chat`, { method: "POST", body: { message: text, history: prior } });
+    let data = null;
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 1000));
+      const t = await api(`/api/think/${thinkId}`);
+      pending.status = t.text;
+      pending.seconds = t.seconds;
+      updateMessage(pending);
+      if (t.status === "done") { data = t.result; break; }
+      if (t.status === "error") throw new Error(t.error || "The AI failed. Try again.");
+    }
     pending.typing = false;
     pending.text = data.reply;
     const hist = (state.histories[guildId] ||= []);

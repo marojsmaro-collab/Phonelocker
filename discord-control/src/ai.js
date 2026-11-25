@@ -132,7 +132,44 @@ function retryAfterMs(res, msg) {
 
 class SoftError extends Error {} // try the next model/provider
 
-async function callGemini({ system, turns, user, json, maxTokens }) {
+/** Read a Server-Sent-Events body, calling onData(json) per event. Aborts if nothing arrives for idleMs. */
+async function readSse(res, ctrl, idleMs, onData) {
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  let idle = setTimeout(() => ctrl.abort(new Error("stopped responding")), idleMs);
+  const onAbort = () => reader.cancel().catch(() => {});
+  ctrl.signal.addEventListener("abort", onAbort, { once: true });
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      clearTimeout(idle);
+      idle = setTimeout(() => ctrl.abort(new Error("stopped responding")), idleMs);
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, i).trim();
+        buf = buf.slice(i + 1);
+        if (!line.startsWith("data:")) continue;
+        const payload = line.slice(5).trim();
+        if (!payload || payload === "[DONE]") continue;
+        try {
+          onData(JSON.parse(payload));
+        } catch {
+          /* ignore a broken event */
+        }
+      }
+    }
+  } finally {
+    clearTimeout(idle);
+    ctrl.signal.removeEventListener("abort", onAbort);
+  }
+  // A cut-off answer is useless (half a JSON plan), so treat it as a failure.
+  if (ctrl.signal.aborted) throw ctrl.signal.reason instanceof Error ? ctrl.signal.reason : new Error("stopped responding");
+}
+
+async function callGemini({ system, turns, user, json, maxTokens, status }) {
   const key = process.env.GEMINI_API_KEY;
   const contents = [
     ...turns.map((t) => ({ role: t.role === "assistant" ? "model" : "user", parts: [{ text: t.content }] })),
@@ -142,11 +179,15 @@ async function callGemini({ system, turns, user, json, maxTokens }) {
   // New AI Studio keys start with "AQ." instead of "AIza". Both work in the header; if Google rejects
   // the header we try the ?key= style once too.
   let keyInQuery = false;
+  let lowThinking = process.env.GEMINI_THINKING !== "full";
   for (const m of unique([MODELS.gemini(), "gemini-flash-latest", "gemini-flash-lite-latest"])) {
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const ctrl = new AbortController();
+      const total = setTimeout(() => ctrl.abort(new Error("took too long")), 150_000);
       let res;
       try {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(m)}:generateContent${keyInQuery ? `?key=${encodeURIComponent(key)}` : ""}`;
+        status(`🧠 Asking Gemini (${m})…`);
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(m)}:streamGenerateContent?alt=sse${keyInQuery ? `&key=${encodeURIComponent(key)}` : ""}`;
         res = await fetch(url, {
           method: "POST",
           headers: { "content-type": "application/json", ...(keyInQuery ? {} : { "x-goog-api-key": key }) },
@@ -157,23 +198,44 @@ async function callGemini({ system, turns, user, json, maxTokens }) {
               ...(json ? { responseMimeType: "application/json" } : {}),
               temperature: 0.7,
               maxOutputTokens: maxTokens,
+              ...(lowThinking ? { thinkingConfig: { thinkingLevel: "low" } } : {}),
             },
           }),
-          signal: AbortSignal.timeout(120_000),
+          signal: ctrl.signal,
         });
+        if (res.ok) {
+          let text = "";
+          let finish = null;
+          let lastShown = 0;
+          await readSse(res, ctrl, Number(process.env.AI_IDLE_MS) || 60_000, (ev) => {
+            const cand = ev?.candidates?.[0];
+            for (const p of cand?.content?.parts || []) if (!p.thought && typeof p.text === "string") text += p.text;
+            finish = cand?.finishReason || finish;
+            if (text.length - lastShown > 300) {
+              lastShown = text.length;
+              status(`✍️ Gemini is writing the plan… ${text.length.toLocaleString()} characters`);
+            }
+          });
+          clearTimeout(total);
+          if (text) return text;
+          lastError = new SoftError(`Gemini returned nothing (${finish || "?"}).`);
+          break;
+        }
       } catch (e) {
-        lastError = new SoftError(`Gemini didn't answer (${e.message}).`);
+        clearTimeout(total);
+        const why = ctrl.signal.reason?.message || e.message;
+        log(`Gemini ${m} failed: ${why}`);
+        lastError = new SoftError(`Gemini ${why}.`);
         break;
       }
+      clearTimeout(total);
       const data = await res.json().catch(() => ({}));
-      if (res.ok) {
-        const cand = data?.candidates?.[0];
-        const text = (cand?.content?.parts || []).filter((p) => !p.thought && typeof p.text === "string").map((p) => p.text).join("");
-        if (text) return text;
-        lastError = new SoftError(`Gemini returned nothing (${cand?.finishReason || data?.promptFeedback?.blockReason || "?"}).`);
-        break;
-      }
       const msg = data?.error?.message || res.statusText;
+      log(`Gemini ${m} → ${res.status}: ${String(msg).slice(0, 160)}`);
+      if (res.status === 400 && lowThinking && /thinking/i.test(msg)) {
+        lowThinking = false; // this model doesn't take that setting
+        continue;
+      }
       const keyProblem = res.status === 401 || ((res.status === 400 || res.status === 403) && /api.?key|credential|access.?token|unauthenticated/i.test(msg));
       if (keyProblem && !keyInQuery) {
         keyInQuery = true;
@@ -184,6 +246,7 @@ async function callGemini({ system, turns, user, json, maxTokens }) {
         lastError = new SoftError(`Gemini free limit hit. (${msg})`);
         const wait = retryAfterMs(res, msg);
         if (attempt === 0 && wait <= 12000) {
+          status(`⏳ Gemini is busy, waiting ${Math.round(wait / 1000)}s…`);
           await sleep(wait);
           continue;
         }
@@ -203,7 +266,7 @@ async function callGemini({ system, turns, user, json, maxTokens }) {
   throw lastError || new SoftError("Gemini failed.");
 }
 
-async function callGroq({ system, turns, user, json, maxTokens }) {
+async function callGroq({ system, turns, user, json, maxTokens, status }) {
   const key = process.env.GROQ_API_KEY;
   let lastError;
   for (const m of unique([MODELS.groq(), "openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama-3.3-70b-versatile"])) {
@@ -211,6 +274,7 @@ async function callGroq({ system, turns, user, json, maxTokens }) {
     for (let attempt = 0; attempt < 3; attempt++) {
       let res;
       try {
+        status(`⚡ Asking Groq (${m})…`);
         res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
           method: "POST",
           headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
@@ -221,9 +285,10 @@ async function callGroq({ system, turns, user, json, maxTokens }) {
             ...(jsonMode ? { response_format: { type: "json_object" } } : {}),
             messages: [{ role: "system", content: system }, ...turns, { role: "user", content: user }],
           }),
-          signal: AbortSignal.timeout(120_000),
+          signal: AbortSignal.timeout(90_000),
         });
       } catch (e) {
+        log(`Groq ${m} failed: ${e.message}`);
         lastError = new SoftError(`Groq didn't answer (${e.message}).`);
         break;
       }
@@ -236,6 +301,7 @@ async function callGroq({ system, turns, user, json, maxTokens }) {
       }
       const msg = data?.error?.message || res.statusText;
       const code = data?.error?.code || "";
+      log(`Groq ${m} → ${res.status}: ${String(msg).slice(0, 160)}`);
       if (res.status === 401) throw new Error("Groq says the API key is wrong.");
       if (res.status === 400 && jsonMode && /json/i.test(`${code} ${msg}`)) {
         jsonMode = false;
@@ -245,6 +311,7 @@ async function callGroq({ system, turns, user, json, maxTokens }) {
         lastError = new SoftError(`Groq free limit hit. (${msg})`);
         const wait = retryAfterMs(res, msg);
         if (attempt === 0 && wait <= 12000) {
+          status(`⏳ Groq is busy, waiting ${Math.round(wait / 1000)}s…`);
           await sleep(wait);
           continue;
         }
@@ -261,7 +328,8 @@ async function callGroq({ system, turns, user, json, maxTokens }) {
 }
 
 let anthropicClient;
-async function callAnthropic({ system, turns, user, maxTokens }) {
+async function callAnthropic({ system, turns, user, maxTokens, status }) {
+  status("🧠 Asking Claude…");
   anthropicClient ??= new Anthropic();
   try {
     const response = await anthropicClient.beta.messages.create({
@@ -289,19 +357,35 @@ async function callAnthropic({ system, turns, user, maxTokens }) {
 const CALL = { gemini: callGemini, groq: callGroq, anthropic: callAnthropic };
 
 /** Ask the AI. Tries every provider you have a key for until one answers. */
-export async function completeText({ system, user, turns = [], json = false, maxTokens = 16000 }) {
+export async function completeText({ system, user, turns = [], json = false, maxTokens = 16000, onStatus }) {
   const order = providerOrder();
   if (!order.length) throw new Error("No AI key set. Put GEMINI_API_KEY (free) or GROQ_API_KEY (free) in your .env file.");
+  const status = (text) => {
+    try {
+      onStatus?.(text);
+    } catch {
+      /* ignore */
+    }
+  };
   const errors = [];
   for (const p of order) {
+    const t0 = Date.now();
     try {
-      return await CALL[p]({ system, turns, user, json, maxTokens });
+      const out = await CALL[p]({ system, turns, user, json, maxTokens, status });
+      log(`${p} answered in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+      return out;
     } catch (e) {
+      log(`${p} gave up after ${((Date.now() - t0) / 1000).toFixed(1)}s: ${e.message}`);
       errors.push(e.message);
       if (!(e instanceof SoftError) && order.length === 1) throw e;
+      if (order.indexOf(p) < order.length - 1) status(`🔁 ${p} didn't work, switching to ${order[order.indexOf(p) + 1]}…`);
     }
   }
   throw new Error(errors.length > 1 ? `All AIs are busy right now: ${errors.join(" | ")}` : errors[0]);
+}
+
+function log(msg) {
+  console.log(`[AI] ${msg}`);
 }
 
 // =====================================================================================
@@ -336,13 +420,14 @@ function cleanTurns(history) {
 }
 
 /** Returns { reply, questions, actions, remember } */
-export async function plan({ message, history = [], serverState, memory = [], allowedTypes }) {
+export async function plan({ message, history = [], serverState, memory = [], allowedTypes, onStatus }) {
   const raw = await completeText({
     system: SYSTEM_PROMPT,
     turns: cleanTurns(history),
     user: `${stateText(serverState, memory)}\nOWNER SAYS:\n${message}`,
     json: true,
     maxTokens: 32000,
+    onStatus,
   });
   return normalize(parseJson(raw), allowedTypes);
 }
