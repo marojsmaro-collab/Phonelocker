@@ -93,6 +93,25 @@ Return the same JSON shape with ONLY the new actions needed to fix the failures 
 and a short "reply" saying what you fixed. If something can't be fixed (missing permissions, limits reached), skip it and say why in "reply".
 Never repeat actions that already worked. Never ask questions here.`;
 
+// A much shorter prompt for AIs with small free limits (Groq allows ~8k tokens per minute).
+const SYSTEM_LITE = `You are SERVERBUILDER, the brain of a Discord bot. The owner talks to you from a website.
+Answer with ONE JSON object only:
+{"reply":"short hype message","questions":[{"id":"topic","question":"...","options":["A","B","Surprise me"],"multi":false}],"actions":[{"type":"...",...}],"remember":[]}
+Ask 3 to 5 questions (and no actions) only when they want a NEW server or full setup without details. Otherwise act.
+Actions (type: fields):
+create_category: name, private | create_channel: name, channel_type(text|voice), category, topic, read_only, private
+edit_channel: name, new_name, topic, category | delete_channel: name | delete_category: name, with_channels
+create_role: name, color(#hex), hoist, mentionable, permissions([Administrator|KickMembers|BanMembers|ModerateMembers|ManageMessages|ManageChannels|ManageRoles]) | edit_role: name, new_name, color | delete_role: name
+set_permissions: channel, role, allow, deny | send_message: channel, content, embed_title, embed_description, color | rename_server: name
+ai_server_icon: idea | ai_server_banner: idea, channel | ai_emojis: emojis([{name, idea}]) | ai_image_post: channel, idea, message
+setup_welcome: channel, message, card_color | test_welcome | set_autoroles: roles | setup_goodbye: channel
+set_mod_log: channel | setup_automod: bad_words, slurs, sexual_content, block_invites, anti_spam (bools), max_mentions, timeout_minutes, exempt_roles
+setup_tickets: channel, support_roles, log_channel | create_role_panel: channel, title, roles([{role, emoji}]) | setup_leveling: channel, rewards([{level, role}])
+start_giveaway: channel, prize, minutes, winners | create_poll: channel, question, answers([{text, emoji}]), hours | setup_qotd: channel, time, topic | post_qotd
+set_bot_status: text
+Rules: one style everywhere ("💬・general", categories "━━ 📌 INFO ━━"), roles first then categories then channels, a color palette for roles,
+use exact existing names from the state, never recreate what exists, keep reply short.`;
+
 const MAX_ACTIONS = 120;
 
 // =====================================================================================
@@ -180,7 +199,9 @@ async function callGemini({ system, turns, user, json, maxTokens, status }) {
   // the header we try the ?key= style once too.
   let keyInQuery = false;
   let lowThinking = process.env.GEMINI_THINKING !== "full";
-  for (const m of unique([MODELS.gemini(), "gemini-flash-latest", "gemini-flash-lite-latest"])) {
+  const started = Date.now();
+  for (const m of unique([MODELS.gemini(), "gemini-flash-latest", "gemini-2.5-flash", "gemini-flash-lite-latest", "gemini-2.5-flash-lite"])) {
+    if (Date.now() - started > 170_000) break;
     for (let attempt = 0; attempt < 4; attempt++) {
       const ctrl = new AbortController();
       const total = setTimeout(() => ctrl.abort(new Error("took too long")), 150_000);
@@ -266,10 +287,34 @@ async function callGemini({ system, turns, user, json, maxTokens, status }) {
   throw lastError || new SoftError("Gemini failed.");
 }
 
-async function callGroq({ system, turns, user, json, maxTokens, status }) {
+// Free tier tokens-per-minute per Groq model. A request (prompt + max answer) bigger than this is refused.
+const GROQ_TPM = { "openai/gpt-oss-120b": 8000, "openai/gpt-oss-20b": 8000, "llama-3.3-70b-versatile": 12000, "meta-llama/llama-4-scout-17b-16e-instruct": 30000 };
+const tokensOf = (text) => Math.ceil(String(text).length / 3.2);
+
+/** Shrink a request until it fits a token budget: lite prompt, fewer past messages, smaller state. */
+function fitRequest({ system, turns, user, lite, budget, wantOut }) {
+  const size = (sys, t, u) => tokensOf(sys) + t.reduce((n, x) => n + tokensOf(x.content) + 4, 0) + tokensOf(u);
+  let sys = system, t = turns, u = user;
+  const fits = () => size(sys, t, u) + Math.min(wantOut, 2500) <= budget;
+  if (fits()) return { sys, t, u };
+  if (lite) { sys = lite.system || sys; u = lite.user || u; }
+  while (!fits() && t.length) t = t.slice(1);
+  if (!fits()) u = u.slice(0, Math.max(2000, (budget - tokensOf(sys) - 2600) * 3));
+  return fits() ? { sys, t, u } : null;
+}
+
+async function callGroq({ system, turns, user, json, maxTokens, status, lite }) {
   const key = process.env.GROQ_API_KEY;
   let lastError;
-  for (const m of unique([MODELS.groq(), "openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama-3.3-70b-versatile"])) {
+  for (const m of unique([MODELS.groq(), "openai/gpt-oss-120b", "meta-llama/llama-4-scout-17b-16e-instruct", "llama-3.3-70b-versatile", "openai/gpt-oss-20b"])) {
+    const budget = (GROQ_TPM[m] || 8000) - 200;
+    const fitted = fitRequest({ system, turns, user, lite, budget, wantOut: maxTokens });
+    if (!fitted) {
+      lastError = new SoftError(`Groq ${m}: request too big for the free limit`);
+      continue;
+    }
+    const promptTokens = tokensOf(fitted.sys) + tokensOf(fitted.u) + fitted.t.reduce((n, x) => n + tokensOf(x.content) + 4, 0);
+    const outTokens = Math.max(1024, Math.min(maxTokens, budget - promptTokens));
     let jsonMode = json;
     for (let attempt = 0; attempt < 3; attempt++) {
       let res;
@@ -281,9 +326,9 @@ async function callGroq({ system, turns, user, json, maxTokens, status }) {
           body: JSON.stringify({
             model: m,
             temperature: 0.6,
-            max_completion_tokens: Math.min(maxTokens, 8000),
+            max_completion_tokens: outTokens,
             ...(jsonMode ? { response_format: { type: "json_object" } } : {}),
-            messages: [{ role: "system", content: system }, ...turns, { role: "user", content: user }],
+            messages: [{ role: "system", content: fitted.sys }, ...fitted.t, { role: "user", content: fitted.u }],
           }),
           signal: AbortSignal.timeout(90_000),
         });
@@ -357,7 +402,7 @@ async function callAnthropic({ system, turns, user, maxTokens, status }) {
 const CALL = { gemini: callGemini, groq: callGroq, anthropic: callAnthropic };
 
 /** Ask the AI. Tries every provider you have a key for until one answers. */
-export async function completeText({ system, user, turns = [], json = false, maxTokens = 16000, onStatus }) {
+export async function completeText({ system, user, turns = [], json = false, maxTokens = 16000, onStatus, lite }) {
   const order = providerOrder();
   if (!order.length) throw new Error("No AI key set. Put GEMINI_API_KEY (free) or GROQ_API_KEY (free) in your .env file.");
   const status = (text) => {
@@ -371,7 +416,7 @@ export async function completeText({ system, user, turns = [], json = false, max
   for (const p of order) {
     const t0 = Date.now();
     try {
-      const out = await CALL[p]({ system, turns, user, json, maxTokens, status });
+      const out = await CALL[p]({ system, turns, user, json, maxTokens, status, lite });
       log(`${p} answered in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
       return out;
     } catch (e) {
@@ -415,8 +460,8 @@ function stateText(serverState, memory) {
 function cleanTurns(history) {
   return history
     .filter((t) => t && (t.role === "user" || t.role === "assistant") && typeof t.content === "string" && t.content)
-    .slice(-10)
-    .map((t) => ({ role: t.role, content: t.content.slice(0, 3000) }));
+    .slice(-8)
+    .map((t) => ({ role: t.role, content: t.content.slice(0, 2000) }));
 }
 
 /** Returns { reply, questions, actions, remember } */
@@ -425,11 +470,25 @@ export async function plan({ message, history = [], serverState, memory = [], al
     system: SYSTEM_PROMPT,
     turns: cleanTurns(history),
     user: `${stateText(serverState, memory)}\nOWNER SAYS:\n${message}`,
+    lite: { system: SYSTEM_LITE, user: `${stateText(liteState(serverState), memory)}\nOWNER SAYS:\n${message}` },
     json: true,
     maxTokens: 32000,
     onStatus,
   });
   return normalize(parseJson(raw), allowedTypes);
+}
+
+/** Just names, for AIs with small limits. */
+function liteState(s) {
+  if (!s || typeof s !== "object") return s;
+  return {
+    name: s.name,
+    community: s.community,
+    categories: (s.categories || []).map((c) => ({ name: c.name, channels: (c.channels || []).map((x) => x.name) })),
+    uncategorized: (s.uncategorized || []).map((x) => x.name),
+    roles: (s.roles || []).map((r) => r.name),
+    emojiSlotsLeft: s.emojiSlotsLeft,
+  };
 }
 
 /** After a build, let the AI fix what failed. */
@@ -440,6 +499,7 @@ export async function repair({ request, failures, serverState, memory = [], allo
       `${stateText(serverState, memory)}\nTHE OWNER ASKED:\n${request}\n\nFAILED ACTIONS:\n` +
       failures.map((f) => `- ${JSON.stringify(f.action)} → ${f.message}`).join("\n") +
       `\n\n${REPAIR_PROMPT}`,
+    lite: { system: SYSTEM_LITE },
     json: true,
     maxTokens: 12000,
   });
@@ -480,8 +540,101 @@ function parseJson(text) {
         /* fall through */
       }
     }
-    return { reply: cleaned.slice(0, 1500), actions: [] };
+    return salvage(cleaned);
   }
+}
+
+/** Pull what we can out of a cut-off or slightly broken JSON answer. */
+function salvage(text) {
+  const out = { actions: [], questions: [] };
+  const r = /"reply"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(text);
+  if (r) {
+    try { out.reply = JSON.parse(`"${r[1]}"`); } catch { out.reply = r[1]; }
+  }
+  for (const key of ["actions", "questions"]) {
+    const at = text.search(new RegExp(`"${key}"\\s*:\\s*\\[`));
+    if (at < 0) continue;
+    let i = text.indexOf("[", at) + 1;
+    let depth = 0, start = -1, inStr = false, esc = false;
+    for (; i < text.length; i++) {
+      const c = text[i];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (c === "\\") esc = true;
+        else if (c === '"') inStr = false;
+        continue;
+      }
+      if (c === '"') inStr = true;
+      else if (c === "{") { if (depth === 0) start = i; depth++; }
+      else if (c === "}") {
+        depth--;
+        if (depth === 0 && start >= 0) {
+          try { out[key].push(JSON.parse(text.slice(start, i + 1))); } catch { /* skip a broken one */ }
+          start = -1;
+        }
+      } else if (c === "]" && depth === 0) break;
+    }
+  }
+  if (!out.reply) out.reply = out.actions.length ? "Here's what I could build 🔨" : text.replace(/[{}"]/g, " ").replace(/\s+/g, " ").trim().slice(0, 600) || "Hmm, I got confused. Try again?";
+  return out;
+}
+
+// Names the AI sometimes uses instead of ours.
+const TYPE_ALIASES = {
+  create_text_channel: ["create_channel", { channel_type: "text" }],
+  create_voice_channel: ["create_channel", { channel_type: "voice" }],
+  create_announcement_channel: ["create_channel", { channel_type: "announcement" }],
+  create_forum_channel: ["create_channel", { channel_type: "forum" }],
+  add_channel: ["create_channel"], make_channel: ["create_channel"], channel: ["create_channel"],
+  add_category: ["create_category"], make_category: ["create_category"], category: ["create_category"],
+  add_role: ["create_role"], make_role: ["create_role"], role: ["create_role"],
+  update_role: ["edit_role"], update_channel: ["edit_channel"], rename_channel: ["edit_channel"],
+  remove_channel: ["delete_channel"], remove_role: ["delete_role"], remove_category: ["delete_category"],
+  channel_permissions: ["set_permissions"], edit_permissions: ["set_permissions"], set_channel_permissions: ["set_permissions"],
+  send_embed: ["send_message"], post_message: ["send_message"], message: ["send_message"], send: ["send_message"],
+  rename_guild: ["rename_server"], set_server_name: ["rename_server"],
+  server_icon: ["ai_server_icon"], generate_server_icon: ["ai_server_icon"], ai_icon: ["ai_server_icon"], make_icon: ["ai_server_icon"],
+  server_banner: ["ai_server_banner"], generate_banner: ["ai_server_banner"], ai_banner: ["ai_server_banner"],
+  create_emojis: ["ai_emojis"], generate_emojis: ["ai_emojis"], ai_emoji: ["ai_emojis"], make_emojis: ["ai_emojis"], create_ai_emojis: ["ai_emojis"],
+  welcome: ["setup_welcome"], setup_welcome_message: ["setup_welcome"], goodbye: ["setup_goodbye"], autoroles: ["set_autoroles"],
+  automod: ["setup_automod"], auto_mod: ["setup_automod"], mod_log: ["set_mod_log"],
+  tickets: ["setup_tickets"], ticket_panel: ["setup_tickets"], create_ticket_panel: ["setup_tickets"],
+  role_panel: ["create_role_panel"], reaction_roles: ["create_role_panel"], self_roles: ["create_role_panel"],
+  leveling: ["setup_leveling"], levels: ["setup_leveling"],
+  giveaway: ["start_giveaway"], create_giveaway: ["start_giveaway"], poll: ["create_poll"],
+  qotd: ["setup_qotd"], question_of_the_day: ["setup_qotd"],
+  bot_status: ["set_bot_status"],
+};
+
+function fixAction(a) {
+  if (!a || typeof a !== "object" || Array.isArray(a)) return null;
+  let x = { ...a };
+  // {"create_channel": {...}} style
+  if (!x.type && !x.action && Object.keys(x).length === 1 && x[Object.keys(x)[0]] && typeof x[Object.keys(x)[0]] === "object") {
+    const [k, v] = Object.entries(x)[0];
+    x = { ...v, type: k, ...(v.type ? { channel_type: v.type } : {}) };
+  }
+  if (!x.type && (x.action || x.kind || x.op)) x.type = x.action || x.kind || x.op;
+  let t = String(x.type || "").toLowerCase().trim().replace(/[\s-]+/g, "_");
+  if (TYPE_ALIASES[t]) {
+    const [real, extra] = TYPE_ALIASES[t];
+    x = { ...(extra || {}), ...x };
+    t = real;
+  }
+  x.type = t;
+  x.name ??= x.channel_name ?? x.role_name ?? x.category_name ?? x.title_name;
+  if (t === "create_channel") x.category ??= x.parent ?? x.category_name;
+  if (t === "create_role" || t === "edit_role") x.color ??= x.colour ?? x.hex;
+  if (t === "send_message") {
+    x.channel ??= x.channel_name ?? x.to;
+    x.content ??= x.message ?? x.text;
+  }
+  if (t === "ai_emojis") {
+    if (!Array.isArray(x.emojis)) x.emojis = x.name || x.idea ? [{ name: x.name, idea: x.idea || x.prompt || x.name }] : [];
+    x.emojis = x.emojis.map((e) => (typeof e === "string" ? { name: e.replace(/\W+/g, "_").toLowerCase().slice(0, 28), idea: e } : e));
+  }
+  if (["ai_server_icon", "ai_server_banner", "ai_image_post"].includes(t)) x.idea ??= x.prompt ?? x.description;
+  return x;
 }
 
 function normalize(obj, allowedTypes) {
@@ -496,12 +649,36 @@ function normalize(obj, allowedTypes) {
       options: (Array.isArray(q.options) ? q.options : []).map((o) => String(o).slice(0, 60)).filter(Boolean).slice(0, 8),
       multi: Boolean(q.multi),
     }));
-  const actions = questions.length
-    ? []
-    : (Array.isArray(obj?.actions) ? obj.actions : []).filter((a) => a && typeof a === "object" && allowed.has(a.type)).slice(0, MAX_ACTIONS);
+  const raw = Array.isArray(obj?.actions) ? obj.actions : [];
+  const fixed = raw.map(fixAction).filter(Boolean);
+  const skipped = fixed.filter((a) => !allowed.has(a.type)).map((a) => a.type || "?");
+  if (skipped.length) log(`Skipped unknown actions: ${skipped.join(", ")}`);
+  const actions = questions.length ? [] : fixed.filter((a) => allowed.has(a.type)).slice(0, MAX_ACTIONS);
   const remember = (Array.isArray(obj?.remember) ? obj.remember : [])
     .filter((r) => typeof r === "string" && r.trim())
     .map((r) => r.trim().slice(0, 160))
     .slice(0, 3);
-  return { reply, questions, actions, remember };
+  return { reply, questions, actions, remember, skipped: questions.length ? [] : skipped };
+}
+
+/** Quick health check of every AI you have a key for (for the dashboard's "Test AI" button). */
+export async function testProviders() {
+  const out = [];
+  for (const p of providerOrder()) {
+    const t0 = Date.now();
+    try {
+      const text = await CALL[p]({
+        system: 'Reply with JSON {"ok":true} only.',
+        turns: [],
+        user: "ping",
+        json: true,
+        maxTokens: 1024,
+        status: () => {},
+      });
+      out.push({ provider: p, ok: /ok/i.test(text), seconds: (Date.now() - t0) / 1000, detail: text.slice(0, 80) });
+    } catch (e) {
+      out.push({ provider: p, ok: false, seconds: (Date.now() - t0) / 1000, detail: e.message.slice(0, 300) });
+    }
+  }
+  return out;
 }

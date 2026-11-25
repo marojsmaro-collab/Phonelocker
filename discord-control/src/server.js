@@ -23,7 +23,7 @@ import {
   applyIcon,
   applyBanner,
 } from "./discord.js";
-import { plan, repair, providerInfo } from "./ai.js";
+import { plan, repair, providerInfo, testProviders } from "./ai.js";
 import { makeIcon, makeBanner, makeEmoji, makeImage, imageExt } from "./art.js";
 import { getConfig, updateConfig } from "./store.js";
 import { leaderboard, xpNeeded } from "./extras.js";
@@ -251,6 +251,7 @@ app.post("/api/guilds/:id/chat", wrap(async (req, res) => {
       const job = startJob(guild, message, out.actions);
       t.result = { reply: out.reply, actions: out.actions, jobId: job.id };
     }
+    if (out.skipped?.length) t.result.skipped = out.skipped;
     console.log(`[AI] Plan ready: ${out.actions.length} action(s), ${out.questions.length} question(s)`);
     t.status = "done";
   } catch (err) {
@@ -258,6 +259,10 @@ app.post("/api/guilds/:id/chat", wrap(async (req, res) => {
     t.error = err.message;
     t.status = "error";
   }
+}));
+
+app.post("/api/ai/test", wrap(async (req, res) => {
+  res.json({ results: await testProviders() });
 }));
 
 app.get("/api/think/:id", (req, res) => {

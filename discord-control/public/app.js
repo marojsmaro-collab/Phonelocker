@@ -63,12 +63,19 @@ function h(tag, props = {}, ...kids) {
   return el;
 }
 
+const OFFLINE = "Can't reach the bot. Make sure Termux is still open and running (tap Acquire wakelock in its notification), then try again.";
+
 async function api(path, opts = {}) {
-  const res = await fetch(path, {
-    method: opts.method || "GET",
-    headers: { "content-type": "application/json", "x-dashboard-key": state.key },
-    body: opts.body ? JSON.stringify(opts.body) : undefined,
-  });
+  let res;
+  try {
+    res = await fetch(path, {
+      method: opts.method || "GET",
+      headers: { "content-type": "application/json", "x-dashboard-key": state.key },
+      body: opts.body ? JSON.stringify(opts.body) : undefined,
+    });
+  } catch {
+    throw Object.assign(new Error(OFFLINE), { offline: true });
+  }
   const data = await res.json().catch(() => ({}));
   if (res.status === 401) { showLogin("Wrong password."); throw new Error("Wrong password."); }
   if (!res.ok) throw Object.assign(new Error(data.error || `Request failed (${res.status})`), { data });
@@ -271,10 +278,32 @@ function renderBuilder() {
   const chips = h("div", { class: "chips", id: "chips" });
   const input = h("textarea", { id: "input", rows: 1, placeholder: "Tell me what to build… e.g. make a Roblox game server with AI emojis" });
   const composer = h("form", { class: "composer" }, input, h("button", { class: "btn primary", type: "submit", id: "send", "aria-label": "Send" }, "➤"));
-  composer.addEventListener("submit", (e) => { e.preventDefault(); const t = input.value; input.value = ""; autosize(); send(t); });
   const autosize = () => { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 180) + "px"; };
-  input.addEventListener("input", autosize);
-  input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); composer.requestSubmit(); } });
+  const touch = matchMedia("(pointer: coarse)").matches;
+  let last = 0;
+  const submit = () => {
+    if (Date.now() - last < 500) return;
+    const t = input.value.trim();
+    if (!t) return;
+    if (state.busy) return toast("Hold up, I'm still working on the last one ⏳", true);
+    last = Date.now();
+    input.value = "";
+    autosize();
+    send(t);
+  };
+  composer.addEventListener("submit", (e) => { e.preventDefault(); submit(); });
+  // Desktop: Enter sends, Shift+Enter makes a new line.
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !(e.isComposing && !touch)) { e.preventDefault(); submit(); }
+  });
+  // Phones: keyboards like Gboard don't always send a normal Enter key, so catch the new line itself.
+  input.addEventListener("beforeinput", (e) => {
+    if (touch && (e.inputType === "insertLineBreak" || e.inputType === "insertParagraph")) { e.preventDefault(); submit(); }
+  });
+  input.addEventListener("input", () => {
+    if (touch && input.value.includes("\n")) { input.value = input.value.replace(/\n+/g, " ").trim(); submit(); return; }
+    autosize();
+  });
   view.replaceChildren(msgs, chips, composer);
   renderMessages();
 }
@@ -319,6 +348,8 @@ function messageEl(m) {
       m.typing
         ? h("div", {}, h("div", { class: "typing" }, h("span"), h("span"), h("span")), m.status ? h("div", { class: "muted small" }, `${m.status}${m.seconds ? ` · ${m.seconds}s` : ""}`) : null)
         : h("div", { class: "text" }, m.text),
+      m.skipped?.length ? h("div", { class: "warnbox", style: "margin-top:8px" }, `⚠️ I skipped ${m.skipped.length} step${m.skipped.length === 1 ? "" : "s"} I didn't understand (${m.skipped.slice(0, 5).join(", ")}). Ask again if something's missing.`) : null,
+      m.error && m.retry ? h("div", { class: "row", style: "margin-top:8px" }, h("button", { class: "btn small", type: "button", onclick: () => { if (state.busy) return toast("Still working on something ⏳", true); m.retry = null; updateMessage(m); send(m.request); } }, "🔁 Try again")) : null,
       m.questions?.length ? questionsEl(m) : null,
       m.confirm ? confirmEl(m) : null,
       m.jobId ? jobEl(m) : null,
@@ -414,10 +445,15 @@ async function pollJob(m) {
         break;
       }
     } catch (err) {
+      if (err.offline && (m.misses = (m.misses || 0) + 1) < 40) {
+        await new Promise((r) => setTimeout(r, 1500));
+        continue;
+      }
       m.text += `\n\n${err.message}`;
       updateMessage(m);
       break;
     }
+    m.misses = 0;
     await new Promise((r) => setTimeout(r, 900));
   }
   state.busy = false;
@@ -449,9 +485,18 @@ async function send(text) {
   try {
     const { thinkId } = await api(`/api/guilds/${guildId}/chat`, { method: "POST", body: { message: text, history: prior } });
     let data = null;
+    let misses = 0;
     for (;;) {
       await new Promise((r) => setTimeout(r, 1000));
-      const t = await api(`/api/think/${thinkId}`);
+      let t;
+      try {
+        t = await api(`/api/think/${thinkId}`);
+        misses = 0;
+      } catch (err) {
+        // The phone may pause the page or the bot for a moment; keep trying for a bit.
+        if (err.offline && ++misses < 30) { pending.status = "📶 Reconnecting to the bot…"; updateMessage(pending); continue; }
+        throw err;
+      }
       pending.status = t.text;
       pending.seconds = t.seconds;
       updateMessage(pending);
@@ -460,6 +505,7 @@ async function send(text) {
     }
     pending.typing = false;
     pending.text = data.reply;
+    pending.skipped = data.skipped || null;
     const hist = (state.histories[guildId] ||= []);
     let assistant = data.reply;
     if (data.questions?.length) {
@@ -478,7 +524,8 @@ async function send(text) {
   } catch (err) {
     pending.typing = false;
     pending.error = true;
-    pending.text = err.message;
+    pending.retry = true;
+    pending.text = `😵 ${err.message}`;
   }
   state.busy = false;
   if (guildId === state.guildId && state.tab === "builder") renderMessages();
@@ -980,7 +1027,8 @@ const PAGES = {
           h("div", {}, `Main: `, h("strong", {}, ai.provider ? `${ai.provider} (${ai.model})` : "none")),
           h("div", {}, `Backups: `, h("strong", {}, ai.backups?.length ? ai.backups.join(", ") : "none")),
           h("div", {}, `Art: `, h("strong", {}, state.status?.art || "?")),
-          ai.provider !== "gemini" ? h("div", { class: "note" }, "Tip: add a free GEMINI_API_KEY from aistudio.google.com/apikey to your .env for the smartest free brain. Your Groq key stays as the backup.") : null),
+          ai.provider !== "gemini" ? h("div", { class: "note" }, "Tip: add a free GEMINI_API_KEY from aistudio.google.com/apikey to your .env for the smartest free brain. Your Groq key stays as the backup.") : null,
+          aiTestBox()),
         card("💭 What I remember about this server",
           mem.length ? h("div", { class: "list" }, mem.map((n) => h("div", { class: "item" }, h("div", { class: "grow" }, n),
             h("button", { class: "btn ghost small", type: "button", onclick: async () => { await api(`/api/guilds/${state.guildId}/memory/remove`, { method: "POST", body: { note: n } }); state.server.memory = mem.filter((x) => x !== n); renderView(); } }, "✕")))) : h("div", { class: "faint small" }, "Nothing yet. I'll remember your style as we build."),
@@ -992,6 +1040,24 @@ const PAGES = {
     ];
   },
 };
+
+function aiTestBox() {
+  const out = h("div", { class: "list" });
+  const btn = h("button", { class: "btn", type: "button", style: "justify-self:start", onclick: async () => {
+    btn.disabled = true;
+    btn.textContent = "Testing… (up to a minute)";
+    out.replaceChildren();
+    try {
+      const { results } = await api("/api/ai/test", { method: "POST" });
+      out.replaceChildren(...(results.length ? results.map((r) => h("div", { class: "item" },
+        h("span", {}, r.ok ? "✅" : "❌"),
+        h("div", { class: "grow" }, h("div", {}, h("strong", {}, r.provider), ` · ${r.seconds.toFixed(1)}s`), h("div", { class: "muted small", style: "white-space:normal" }, r.ok ? "Working" : r.detail)))) : [h("div", { class: "warnbox" }, "No AI keys found in .env")]));
+    } catch (err) { out.replaceChildren(h("div", { class: "warnbox" }, err.message)); }
+    btn.disabled = false;
+    btn.textContent = "🩺 Test the AI again";
+  } }, "🩺 Test the AI");
+  return h("div", { class: "rows" }, btn, out);
+}
 
 // =====================================================================
 // art studio cards
