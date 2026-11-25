@@ -1,141 +1,122 @@
+// The bot's brain. Talks to free AI providers (Gemini first, Groq backup, Claude optional) and turns
+// what the owner says into a plan of actions, questions to ask, and things to remember.
 import Anthropic from "@anthropic-ai/sdk";
-import { ACTION_TYPES } from "./discord.js";
 
-const SYSTEM_PROMPT = `You are the brain of a Discord bot that builds and manages a Discord server for its owner.
-The owner chats with you from a website. You answer ONLY with one JSON object, no markdown, in this exact shape:
+// =====================================================================================
+// The system prompt
+// =====================================================================================
 
-{"reply": "short friendly message to the owner", "actions": [ ...zero or more action objects... ]}
+const SYSTEM_PROMPT = `You are SERVERBUILDER, an elite Discord server architect and the brain of a Discord bot.
+The server owner talks to you from a website. You design and build entire Discord servers and run the bot's features.
+You are creative, precise, and you build things that look PRO: consistent naming, emoji, colors and structure.
 
-Each action object has a "type" plus the fields for that type. Allowed types and fields:
+=== OUTPUT ===
+Answer with ONE JSON object and nothing else:
+{
+  "reply": "short hype message to the owner (1 to 3 sentences, like a friend)",
+  "questions": [ { "id": "theme", "question": "What's the server about?", "options": ["Gaming", "Roblox game", "Anime", "Chill hangout"], "multi": false } ],
+  "actions": [ { "type": "...", ...fields } ],
+  "remember": [ "short fact about the owner's taste worth keeping, like 'likes dark purple and green' " ]
+}
+- "questions": ONLY when you need answers before building (see QUESTION SYSTEM). When you ask, "actions" must be [].
+- "actions": run top to bottom. Empty [] when just chatting or asking.
+- "remember": optional, only NEW lasting preferences. Max 3.
 
-- create_category: name, private (bool), permissions ([{role, allow: [perm], deny: [perm]}])
-- create_channel: name, channel_type ("text" | "voice" | "announcement" | "forum" | "stage"), category (name; created if missing), topic, nsfw (bool), slowmode (seconds), user_limit (voice only), private (bool), permissions ([{role, allow, deny}])
-- edit_channel: name (existing channel or category), new_name, topic, category (move into; "none" to remove), nsfw, slowmode, position, sync_permissions (bool)
-- delete_channel: name
-- delete_category: name, with_channels (bool, also delete channels inside)
-- set_permissions: channel, role ("@everyone" allowed), allow ([perm]), deny ([perm]), reset ([perm])
-- create_role: name, color ("#RRGGBB"), hoist (bool, show separately in member list), mentionable (bool), permissions ([perm])
-- edit_role: name, new_name, color, hoist, mentionable, permissions ([perm], replaces all)
-- delete_role: name
-- create_emoji: name (letters, numbers, underscores), image_url (direct link to png/jpg/gif under 256 KB)
-- delete_emoji: name
-- send_message: channel, content, embed_title, embed_description, color
+=== QUESTION SYSTEM ===
+Ask 3 to 5 quick questions (3 to 6 short options each, add "Surprise me" as the last option) BEFORE building when:
+- the owner wants a NEW server, a full setup, or a theme makeover, AND
+- they didn't already give the key details (what it's about, vibe/style, size, colors, which features).
+Never ask when: the request is small and clear, they said "just do it" / "you pick" / "surprise me", or they're answering your questions (then BUILD).
+Good question ids: topic, vibe, colors, size, features, name. "multi": true for "pick all that apply" (features).
+
+=== ACTIONS (type: fields) ===
+Structure:
+- create_category: name, private(bool), permissions([{role, allow:[perm], deny:[perm]}])
+- create_channel: name, channel_type("text"|"voice"|"announcement"|"forum"|"stage"), category(name, auto-created), topic, read_only(bool: everyone reads, only staff talk), private(bool), permissions, slowmode(sec), user_limit(voice), nsfw
+- edit_channel: name, new_name, topic, category("none" removes), read_only, slowmode, position, sync_permissions
+- delete_channel: name | delete_category: name, with_channels(bool)
+- set_permissions: channel, role("@everyone" ok), allow, deny, reset
+- create_role: name, color("#RRGGBB"), gradient_color("#RRGGBB", only if server has ENHANCED_ROLE_COLORS), hoist(bool), mentionable(bool), permissions([perm])
+- edit_role: name, new_name, color, gradient_color, hoist, mentionable, permissions | delete_role: name
+- send_message: channel, content, embed_title, embed_description, color, image_url, footer
 - rename_server: name
-- set_server_icon: image_url
+- create_emoji: name, image_url | delete_emoji: name
+AI art (you CAN make images, describe them vividly in "idea"):
+- ai_server_icon: idea (what the icon shows; style, colors, mascot)
+- ai_server_banner: idea, channel (where to post it if the server can't use banners; usually welcome or rules)
+- ai_emojis: emojis([{name: "lowercase_name", idea: "what it shows"}]) max 10 per action, fit the server theme
+- ai_image_post: channel, idea, wide(bool), message
+Features:
+- setup_welcome: channel, message(placeholders {user} {username} {name} {server} {count}), card(bool, pfp welcome image), card_color, card_title, card_background(image link), enabled
+- setup_goodbye: channel, message, enabled
+- set_autoroles: roles([names]) given to every new member
+- test_welcome: (no fields) posts a sample card
+- set_mod_log: channel ("none" turns off)
+- setup_automod: bad_words, sexual_content, slurs, block_invites, block_links, anti_spam (bools), block_words([words, "*word*" matches inside]), max_mentions(number), timeout_minutes, alert_channel, exempt_roles([roles]), custom_message
+- disable_automod
+- setup_tickets: channel(panel), category, support_roles([roles]), log_channel, title, description, button_label, ticket_message, color
+- create_role_panel: channel, title, description, color, roles([{role, label, emoji}]) buttons to get/remove roles (create the roles first)
+- setup_leveling: enabled, channel("same" = where they chat), message({user} {level}), rewards([{level, role}]), card_color
+- start_giveaway: channel, prize, minutes, winners, description
+- end_giveaway: prize | reroll_giveaway: prize
+- create_poll: channel, question, answers([{text, emoji}]) 2 to 10, hours(1 to 768), multi(bool)
+- setup_qotd: channel, enabled, time("HH:MM" 24h), topic(what questions are about), ping_role
+- post_qotd: (posts one now)
+- set_bot_status: text, activity("custom"|"playing"|"watching"|"listening"|"competing"), status("online"|"idle"|"dnd")
+- set_bot_avatar: image_url
 
-Bot features (you ARE the bot, these make you do things automatically):
-- setup_welcome: channel, message (placeholders {user} mention, {username}, {name}, {server}, {count}), card (bool, default true: posts a welcome image with their pfp), card_color ("#RRGGBB"), card_title (short, like "WELCOME"), card_background (image link, "" to remove), enabled (bool, false turns welcomes off)
-- setup_goodbye: channel, message (same placeholders), enabled (bool)
-- set_autoroles: roles ([role names] every new member gets; [] clears)
-- test_welcome: no fields. Posts a sample welcome card using the owner's pfp. Do this right after setting up welcomes.
-- set_mod_log: channel (where mod actions and AutoMod alerts get logged; "none" turns it off)
-- setup_automod: uses Discord's built in AutoMod so it works 24/7 even when the bot is offline. Only include fields you want to change:
-  bad_words (bool, swearing list), sexual_content (bool), slurs (bool), block_words ([custom words; "*word*" matches inside words]),
-  block_links (bool, all links), block_invites (bool, Discord invite links), anti_spam (bool), max_mentions (number of mentions per message, 0 off),
-  timeout_minutes (auto timeout for blocked words, links and mention spam), alert_channel (channel for alerts), exempt_roles ([roles AutoMod ignores, like staff]),
-  custom_message (what the person sees when blocked)
-- disable_automod: no fields. Turns off the bot's AutoMod rules.
-- setup_tickets: channel (where the "Open a ticket" panel goes), category (where ticket channels get made, created if missing), support_roles ([staff roles that see tickets]), log_channel (gets transcripts), title, description, button_label, ticket_message (first message inside a new ticket), color
-- create_role_panel: channel, title, description, color, roles ([{role, label, emoji}], up to 25). Posts buttons people tap to get or remove roles. The roles must exist first (create_role before it in the same plan).
-- setup_leveling: enabled (bool), channel (where level ups are announced, "same" = where they chatted), message (placeholders {user} {username} {level} {server}), rewards ([{level, role}] roles given at that level), card_color
-- set_bot_status: text, activity ("custom" | "playing" | "watching" | "listening" | "competing"), status ("online" | "idle" | "dnd")
-- set_bot_avatar: image_url (changes the bot's own pfp)
+Permission names: Administrator, ViewChannel, SendMessages, ReadMessageHistory, ManageChannels, ManageRoles, ManageMessages, ManageGuild, KickMembers, BanMembers, ModerateMembers, MentionEveryone, Connect, Speak, Stream, MuteMembers, DeafenMembers, MoveMembers, AttachFiles, EmbedLinks, AddReactions, UseExternalEmojis, CreateInstantInvite, ChangeNickname, ManageNicknames, ManageWebhooks, ManageGuildExpressions, ManageEvents, ManageThreads, SendMessagesInThreads, CreatePublicThreads.
 
-The bot also has slash commands people use inside Discord.
-Staff only: /ban /unban /kick /timeout /untimeout /warn /warnings /clearwarns /purge /lock /unlock /slowmode
-Everyone: /rank (level card) /leaderboard /help
-If the owner wants moderation, set up AutoMod plus a mod log channel and tell them about these commands. Never pretend you can add other bots.
+=== HOW A PRO BUILDS ===
+1. Pick ONE style and use it everywhere. Channel: "emoji・name" (like "💬・general", "📢・announcements"). Category: "━━ 📌 INFO ━━" or "📌 INFO". Voice: "🔊・Chill VC". Match the server's existing style if it has one.
+2. Pick a color palette of 4 to 6 hex colors that fit the theme. Use it for roles (top roles brightest), embeds, welcome card_color and leveling card_color.
+3. Order: roles first (highest first: Owner, Admin, Moderator, ... Member, Bots, ping roles), then categories, then channels, then features, then messages, then art.
+4. Info category on top: welcome, rules (read_only), announcements (read_only), roles. Then community (general, media, memes, bot commands), then topic channels, then voice, then a private staff category (Moderator+ only) with staff chat and mod logs.
+5. Staff roles get real permissions (Admin: Administrator; Moderator: KickMembers, BanMembers, ModerateMembers, ManageMessages, MuteMembers, MoveMembers, ViewChannel). Member: none extra. Ping roles: mentionable.
+6. Write REAL content: a rules embed with numbered rules, a welcome embed explaining the channels, topics on channels.
+7. Full server setups also get: setup_welcome + test_welcome, a role panel for pings, AutoMod basics + mod log, ai_server_icon, ai_emojis (5 to 8 themed), and leveling with 3 or 4 reward roles. Rename the server if they gave/asked for a name.
+8. Use exact existing names from CURRENT SERVER STATE when editing or deleting. Never recreate what already exists. Don't delete anything unless asked.
+9. Announcement, forum and stage channels need a Community server (state.community true). If not Community, use text channels with read_only.
+10. Respect limits: max 500 channels, 250 roles, emoji slots in state.emojiSlotsLeft. Real server banners need boost level 2 (state.canBanner), else ai_server_banner posts the art in a channel. Gradient role colors need ENHANCED_ROLE_COLORS in state.features_list.
+11. If something would wreck the server (delete everything, remove all roles), confirm in "reply" with actions [] first unless they clearly insist.
+12. "reply": hype, short, say what you built or what you're asking. No markdown headers.
 
-Permission names use Discord's names, for example: Administrator, ViewChannel, SendMessages, ReadMessageHistory,
-ManageChannels, ManageRoles, ManageMessages, ManageGuild, KickMembers, BanMembers, ModerateMembers, MentionEveryone,
-Connect, Speak, Stream, MuteMembers, DeafenMembers, MoveMembers, AttachFiles, EmbedLinks, AddReactions,
-UseExternalEmojis, CreateInstantInvite, ChangeNickname, ManageNicknames, ManageWebhooks, ManageGuildExpressions, ManageEvents.
+=== EXAMPLES ===
+Owner: "make me a server"
+{"reply":"Ooo let's cook 🔥 quick questions so I build exactly your vibe","questions":[{"id":"topic","question":"What's the server about?","options":["Gaming","Roblox game","Anime","Chill hangout","Study","Surprise me"],"multi":false},{"id":"vibe","question":"What vibe?","options":["Dark and neon","Cute and pastel","Clean and minimal","Chaotic and fun","Surprise me"],"multi":false},{"id":"size","question":"How big?","options":["Small (10 channels)","Medium (20 channels)","Huge (35+ channels)","Surprise me"],"multi":false},{"id":"features","question":"What should the bot run?","options":["Welcome cards","Leveling","Tickets","Giveaways","AutoMod","Question of the day","Surprise me"],"multi":true}],"actions":[],"remember":[]}
 
-How to build well:
-- Actions run in order, so create categories and roles before the channels and permissions that use them.
-- Make servers look good: channel names with an emoji and a separator, like "💬・general", "📢・announcements", "🎮・gaming", "🔊・General VC".
-  Category names often look like "━━ 💬 COMMUNITY ━━" or "📌 INFO". Match the style the owner asks for, or the style already on the server.
-- Text channel names are lowercase with dashes instead of spaces (Discord does this anyway). Voice channels and categories can have spaces and capitals.
-- Give channels a useful topic when it makes sense.
-- Staff/mod/admin roles get sensible permissions and a color. Give role colors that look good together.
-- Private or staff only channels: set private true and add permissions allowing ViewChannel for the right roles.
-- Announcement, forum and stage channels only work on Community servers. If the server is not Community, use text channels instead and say so.
-- Custom emojis need an image link. You cannot draw images. If the owner wants custom emojis but gave no image links, explain that and use emoji characters in names instead.
-- When asked to "set up a server" or a theme (gaming, study, anime, business, etc.), go big: several categories, channels, roles, and a welcome or rules message.
-- Use the CURRENT SERVER STATE you are given. Use exact existing names when editing, deleting or referencing. Don't recreate things that already exist unless asked.
-- For "set up moderation" or "auto mod": a private mod logs channel if none exists, set_mod_log, then setup_automod with bad_words, slurs, sexual_content, block_invites, anti_spam, max_mentions 5, timeout_minutes 10, exempt staff roles.
-- For welcomes: make a welcome channel if none exists, then setup_welcome, then test_welcome.
-- For tickets: a "create a ticket" style text channel if none exists (everyone can see it but not send messages), a private ticket logs channel, then setup_tickets with the staff roles.
-- For self roles or reaction roles: create the roles if missing (pings like "📢 Announcements Ping", or colors, games, ages), a roles channel if missing, then create_role_panel.
-- For leveling: setup_leveling with a few reward roles (create them first if missing), like level 5, 10, 20, 50.
-- The server state has a "features" section showing what's already on. If features.membersIntent is false, welcomes and autoroles won't fire until the owner turns on Server Members Intent in the Discord Developer Portal (Bot page) and restarts. Tell them that when they set up welcomes or autoroles.
-- If the owner is just chatting or asking a question, reply with "actions": [].
-- If the request is unclear or would wreck the server, ask a short question instead of acting.
-- Keep "reply" short and hype, like a friend, and say what you built.
-- Never put the bot token, API keys or anything secret in messages or channels.`;
+Owner: "add a memes channel"
+{"reply":"Memes channel is up 😂","actions":[{"type":"create_channel","name":"😂・memes","category":"━━ 💬 COMMUNITY ━━","topic":"Post your best memes. Keep it clean."}],"remember":[]}`;
 
-const MAX_ACTIONS = 80;
+const REPAIR_PROMPT = `Some actions in your last build failed. Fix what you can.
+Return the same JSON shape with ONLY the new actions needed to fix the failures (use exact names from CURRENT SERVER STATE),
+and a short "reply" saying what you fixed. If something can't be fixed (missing permissions, limits reached), skip it and say why in "reply".
+Never repeat actions that already worked. Never ask questions here.`;
 
-function pickProvider() {
+const MAX_ACTIONS = 120;
+
+// =====================================================================================
+// Providers
+// =====================================================================================
+
+const MODELS = {
+  gemini: () => process.env.GEMINI_MODEL || "gemini-flash-latest",
+  groq: () => process.env.GROQ_MODEL || "openai/gpt-oss-120b",
+  anthropic: () => process.env.ANTHROPIC_MODEL || "claude-opus-5-5",
+};
+const KEYS = { gemini: "GEMINI_API_KEY", groq: "GROQ_API_KEY", anthropic: "ANTHROPIC_API_KEY" };
+
+/** Providers with a key, best first. If one is out of free quota the next one takes over. */
+function providerOrder() {
+  const all = ["gemini", "groq", "anthropic"].filter((p) => process.env[KEYS[p]]);
   const forced = (process.env.AI_PROVIDER || "").toLowerCase().trim();
-  if (forced) return forced;
-  if (process.env.GEMINI_API_KEY) return "gemini";
-  if (process.env.GROQ_API_KEY) return "groq";
-  if (process.env.ANTHROPIC_API_KEY) return "anthropic";
-  return null;
+  if (forced && all.includes(forced)) return [forced, ...all.filter((p) => p !== forced)];
+  return all;
 }
 
 export function providerInfo() {
-  const provider = pickProvider();
-  const model =
-    provider === "gemini" ? process.env.GEMINI_MODEL || "gemini-flash-latest"
-    : provider === "groq" ? process.env.GROQ_MODEL || "openai/gpt-oss-120b"
-    : provider === "anthropic" ? process.env.ANTHROPIC_MODEL || "claude-opus-5-5"
-    : null;
-  return { provider, model };
-}
-
-/**
- * history: [{role: "user" | "assistant", content: string}]
- * Returns { reply, actions }.
- */
-export async function plan({ message, history = [], serverState }) {
-  const { provider, model } = providerInfo();
-  if (!provider) {
-    throw new Error("No AI key set. Put GEMINI_API_KEY (free) or GROQ_API_KEY (free) in your .env file.");
-  }
-
-  const turns = history
-    .filter((t) => t && (t.role === "user" || t.role === "assistant") && typeof t.content === "string" && t.content)
-    .slice(-8)
-    .map((t) => ({ role: t.role, content: t.content.slice(0, 2500) }));
-
-  const userText =
-    `CURRENT SERVER STATE (JSON):\n${JSON.stringify(compact(serverState))}\n\n` +
-    `OWNER SAYS:\n${message}`;
-
-  let raw;
-  if (provider === "gemini") raw = await callGemini(model, turns, userText);
-  else if (provider === "groq") raw = await callGroq(model, turns, userText);
-  else if (provider === "anthropic") raw = await callAnthropic(model, turns, userText);
-  else throw new Error(`Unknown AI_PROVIDER "${provider}". Use gemini, groq or anthropic.`);
-
-  return normalize(parseJson(raw));
-}
-
-/** Drop ids, links and empty fields so free tier token limits go further. */
-function compact(value) {
-  if (Array.isArray(value)) return value.map(compact);
-  if (value && typeof value === "object") {
-    const out = {};
-    for (const [k, v] of Object.entries(value)) {
-      if (k === "id" || k === "icon" || k === "url" || v === undefined || v === null) continue;
-      if (Array.isArray(v) && v.length === 0) continue;
-      out[k] = compact(v);
-    }
-    return out;
-  }
-  return value;
+  const order = providerOrder();
+  return { provider: order[0] || null, model: order[0] ? MODELS[order[0]]() : null, backups: order.slice(1) };
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -144,66 +125,64 @@ const unique = (list) => [...new Set(list.filter(Boolean))];
 function retryAfterMs(res, msg) {
   const h = Number(res.headers.get("retry-after"));
   if (Number.isFinite(h) && h > 0) return h * 1000;
-  const m = /try again in ([\d.]+)\s*(ms|s)/i.exec(msg || "");
+  const m = /(?:try again in|retry in) ([\d.]+)\s*(ms|s)/i.exec(msg || "");
   if (m) return Number(m[1]) * (m[2].toLowerCase() === "ms" ? 1 : 1000);
   return 5000;
 }
 
-// ---------- providers ----------
+class SoftError extends Error {} // try the next model/provider
 
-async function callGemini(model, turns, userText) {
+async function callGemini({ system, turns, user, json, maxTokens }) {
   const key = process.env.GEMINI_API_KEY;
-  if (!key) throw new Error("GEMINI_API_KEY is missing.");
   const contents = [
     ...turns.map((t) => ({ role: t.role === "assistant" ? "model" : "user", parts: [{ text: t.content }] })),
-    { role: "user", parts: [{ text: userText }] },
+    { role: "user", parts: [{ text: user }] },
   ];
-  // If the main model is out of free quota, try the lighter one.
-  const models = unique([model, "gemini-flash-lite-latest"]);
   let lastError;
-  for (const m of models) {
+  for (const m of unique([MODELS.gemini(), "gemini-flash-latest", "gemini-flash-lite-latest"])) {
     for (let attempt = 0; attempt < 2; attempt++) {
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(m)}:generateContent`,
-        {
+      let res;
+      try {
+        res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(m)}:generateContent`, {
           method: "POST",
           headers: { "content-type": "application/json", "x-goog-api-key": key },
           body: JSON.stringify({
-            systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+            systemInstruction: { parts: [{ text: system }] },
             contents,
-            generationConfig: { responseMimeType: "application/json", temperature: 0.5 },
+            generationConfig: {
+              ...(json ? { responseMimeType: "application/json" } : {}),
+              temperature: 0.7,
+              maxOutputTokens: maxTokens,
+            },
           }),
-        }
-      );
+          signal: AbortSignal.timeout(120_000),
+        });
+      } catch (e) {
+        lastError = new SoftError(`Gemini didn't answer (${e.message}).`);
+        break;
+      }
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
         const cand = data?.candidates?.[0];
-        const text = (cand?.content?.parts || [])
-          .filter((p) => !p.thought && typeof p.text === "string")
-          .map((p) => p.text)
-          .join("");
+        const text = (cand?.content?.parts || []).filter((p) => !p.thought && typeof p.text === "string").map((p) => p.text).join("");
         if (text) return text;
-        lastError = new Error(`Gemini returned nothing (${cand?.finishReason || data?.promptFeedback?.blockReason || "no reason"}).`);
+        lastError = new SoftError(`Gemini returned nothing (${cand?.finishReason || data?.promptFeedback?.blockReason || "?"}).`);
         break;
       }
       const msg = data?.error?.message || res.statusText;
-      if (res.status === 400 || res.status === 403) throw new Error(`Gemini rejected the request: ${msg}`);
+      if (res.status === 400 && /api key/i.test(msg)) throw new Error("Gemini says the API key is wrong.");
       if (res.status === 429) {
-        lastError = new Error(`Gemini free limit hit, wait a minute and try again. (${msg})`);
+        lastError = new SoftError(`Gemini free limit hit. (${msg})`);
         const wait = retryAfterMs(res, msg);
-        if (attempt === 0 && wait <= 15000) {
+        if (attempt === 0 && wait <= 12000) {
           await sleep(wait);
           continue;
         }
         break;
       }
-      if (res.status === 404) {
-        lastError = new Error(`Gemini model "${m}" not found. Set GEMINI_MODEL in .env. (${msg})`);
-        break;
-      }
-      if (res.status >= 500) {
-        lastError = new Error(`Gemini is having issues (${res.status}). Try again in a bit.`);
-        if (attempt === 0) {
+      if (res.status === 404 || res.status >= 500 || res.status === 403) {
+        lastError = new SoftError(`Gemini ${m}: ${msg}`);
+        if (res.status >= 500 && attempt === 0) {
           await sleep(1500);
           continue;
         }
@@ -212,104 +191,186 @@ async function callGemini(model, turns, userText) {
       throw new Error(`Gemini error ${res.status}: ${msg}`);
     }
   }
-  throw lastError;
+  throw lastError || new SoftError("Gemini failed.");
 }
 
-async function callGroq(model, turns, userText) {
+async function callGroq({ system, turns, user, json, maxTokens }) {
   const key = process.env.GROQ_API_KEY;
-  if (!key) throw new Error("GROQ_API_KEY is missing.");
-  // Each Groq model has its own free limits, so if one is maxed out we try the next.
-  const models = unique([model, "openai/gpt-oss-20b", "llama-3.3-70b-versatile"]);
   let lastError;
-  for (const m of models) {
-    let jsonMode = true;
+  for (const m of unique([MODELS.groq(), "openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama-3.3-70b-versatile"])) {
+    let jsonMode = json;
     for (let attempt = 0; attempt < 3; attempt++) {
-      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-        method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
-        body: JSON.stringify({
-          model: m,
-          temperature: 0.5,
-          ...(jsonMode ? { response_format: { type: "json_object" } } : {}),
-          messages: [{ role: "system", content: SYSTEM_PROMPT }, ...turns, { role: "user", content: userText }],
-        }),
-      });
+      let res;
+      try {
+        res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
+          body: JSON.stringify({
+            model: m,
+            temperature: 0.6,
+            max_completion_tokens: Math.min(maxTokens, 8000),
+            ...(jsonMode ? { response_format: { type: "json_object" } } : {}),
+            messages: [{ role: "system", content: system }, ...turns, { role: "user", content: user }],
+          }),
+          signal: AbortSignal.timeout(120_000),
+        });
+      } catch (e) {
+        lastError = new SoftError(`Groq didn't answer (${e.message}).`);
+        break;
+      }
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
         const text = data?.choices?.[0]?.message?.content;
         if (text) return text;
-        lastError = new Error("Groq returned nothing.");
+        lastError = new SoftError("Groq returned nothing.");
         break;
       }
       const msg = data?.error?.message || res.statusText;
       const code = data?.error?.code || "";
       if (res.status === 401) throw new Error("Groq says the API key is wrong.");
       if (res.status === 400 && jsonMode && /json/i.test(`${code} ${msg}`)) {
-        jsonMode = false; // the model wrote broken JSON, ask again without strict JSON mode
+        jsonMode = false;
         continue;
       }
       if (res.status === 429) {
-        lastError = new Error(`Groq free limit hit, wait a bit and try again. (${msg})`);
+        lastError = new SoftError(`Groq free limit hit. (${msg})`);
         const wait = retryAfterMs(res, msg);
-        if (attempt === 0 && wait <= 15000) {
+        if (attempt === 0 && wait <= 12000) {
           await sleep(wait);
           continue;
         }
         break;
       }
-      if (res.status === 413) {
-        lastError = new Error("That request is too big for the free Groq limit. Try a shorter message or fewer things at once.");
-        break;
-      }
-      if (res.status === 404 || (res.status === 400 && /model/i.test(msg))) {
-        lastError = new Error(`Groq model "${m}" isn't available. (${msg})`);
-        break;
-      }
-      if (res.status >= 500) {
-        lastError = new Error(`Groq is having issues (${res.status}). Try again in a bit.`);
-        if (attempt === 0) {
-          await sleep(1500);
-          continue;
-        }
+      if (res.status === 413 || res.status === 404 || res.status >= 500 || (res.status === 400 && /model/i.test(msg))) {
+        lastError = new SoftError(`Groq ${m}: ${msg}`);
         break;
       }
       throw new Error(`Groq error ${res.status}: ${msg}`);
     }
   }
-  throw lastError;
+  throw lastError || new SoftError("Groq failed.");
 }
 
 let anthropicClient;
-async function callAnthropic(model, turns, userText) {
-  anthropicClient ??= new Anthropic(); // reads ANTHROPIC_API_KEY
+async function callAnthropic({ system, turns, user, maxTokens }) {
+  anthropicClient ??= new Anthropic();
   try {
     const response = await anthropicClient.beta.messages.create({
-      model,
-      max_tokens: 16000,
+      model: MODELS.anthropic(),
+      max_tokens: Math.max(maxTokens, 16000),
       betas: ["server-side-fallback-2026-07-01"],
       fallbacks: "default",
       output_config: { effort: "medium" },
-      system: SYSTEM_PROMPT,
-      messages: [...turns, { role: "user", content: userText }],
+      system,
+      messages: [...turns, { role: "user", content: user }],
     });
-    if (response.stop_reason === "refusal") {
-      throw new Error("Claude declined that request. Try rewording it.");
-    }
-    const text = response.content
-      .filter((b) => b.type === "text")
-      .map((b) => b.text)
-      .join("");
-    if (!text) throw new Error(`Claude returned nothing (stop reason: ${response.stop_reason}).`);
+    if (response.stop_reason === "refusal") throw new SoftError("Claude declined that request.");
+    const text = response.content.filter((b) => b.type === "text").map((b) => b.text).join("");
+    if (!text) throw new SoftError(`Claude returned nothing (${response.stop_reason}).`);
     return text;
   } catch (error) {
+    if (error instanceof SoftError) throw error;
     if (error instanceof Anthropic.AuthenticationError) throw new Error("Anthropic says the API key is wrong.");
-    if (error instanceof Anthropic.RateLimitError) throw new Error("Claude rate limit hit, wait a bit and try again.");
-    if (error instanceof Anthropic.APIError) throw new Error(`Claude error ${error.status}: ${error.message}`);
+    if (error instanceof Anthropic.RateLimitError) throw new SoftError("Claude rate limit hit.");
+    if (error instanceof Anthropic.APIError) throw new SoftError(`Claude error ${error.status}: ${error.message}`);
     throw error;
   }
 }
 
-// ---------- output cleanup ----------
+const CALL = { gemini: callGemini, groq: callGroq, anthropic: callAnthropic };
+
+/** Ask the AI. Tries every provider you have a key for until one answers. */
+export async function completeText({ system, user, turns = [], json = false, maxTokens = 16000 }) {
+  const order = providerOrder();
+  if (!order.length) throw new Error("No AI key set. Put GEMINI_API_KEY (free) or GROQ_API_KEY (free) in your .env file.");
+  const errors = [];
+  for (const p of order) {
+    try {
+      return await CALL[p]({ system, turns, user, json, maxTokens });
+    } catch (e) {
+      errors.push(e.message);
+      if (!(e instanceof SoftError) && order.length === 1) throw e;
+    }
+  }
+  throw new Error(errors.length > 1 ? `All AIs are busy right now: ${errors.join(" | ")}` : errors[0]);
+}
+
+// =====================================================================================
+// Planning
+// =====================================================================================
+
+/** Drop ids, links and empty fields so free tier token limits go further. */
+function compact(value) {
+  if (Array.isArray(value)) return value.map(compact);
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) {
+      if (k === "id" || k === "icon" || k === "url" || k === "config" || v === undefined || v === null || v === false) continue;
+      if (Array.isArray(v) && v.length === 0) continue;
+      out[k] = compact(v);
+    }
+    return out;
+  }
+  return value;
+}
+
+function stateText(serverState, memory) {
+  const notes = (memory || []).length ? `\nOWNER PREFERENCES (remembered):\n- ${memory.join("\n- ")}\n` : "";
+  return `CURRENT SERVER STATE (JSON):\n${JSON.stringify(compact(serverState))}\n${notes}`;
+}
+
+function cleanTurns(history) {
+  return history
+    .filter((t) => t && (t.role === "user" || t.role === "assistant") && typeof t.content === "string" && t.content)
+    .slice(-10)
+    .map((t) => ({ role: t.role, content: t.content.slice(0, 3000) }));
+}
+
+/** Returns { reply, questions, actions, remember } */
+export async function plan({ message, history = [], serverState, memory = [], allowedTypes }) {
+  const raw = await completeText({
+    system: SYSTEM_PROMPT,
+    turns: cleanTurns(history),
+    user: `${stateText(serverState, memory)}\nOWNER SAYS:\n${message}`,
+    json: true,
+    maxTokens: 32000,
+  });
+  return normalize(parseJson(raw), allowedTypes);
+}
+
+/** After a build, let the AI fix what failed. */
+export async function repair({ request, failures, serverState, memory = [], allowedTypes }) {
+  const raw = await completeText({
+    system: SYSTEM_PROMPT,
+    user:
+      `${stateText(serverState, memory)}\nTHE OWNER ASKED:\n${request}\n\nFAILED ACTIONS:\n` +
+      failures.map((f) => `- ${JSON.stringify(f.action)} → ${f.message}`).join("\n") +
+      `\n\n${REPAIR_PROMPT}`,
+    json: true,
+    maxTokens: 12000,
+  });
+  const out = normalize(parseJson(raw), allowedTypes);
+  out.questions = [];
+  return out;
+}
+
+/** A fresh question of the day. */
+export async function questionOfTheDay({ topic, recent = [] }) {
+  const raw = await completeText({
+    system:
+      'You write fun "Question of the Day" posts for Discord communities. Answer with JSON {"question": "..."} only. ' +
+      "One question, under 140 characters, easy to answer, sparks conversation, safe for teens, no yes/no questions.",
+    user: `Topic: ${topic || "anything fun"}\nDon't repeat any of these:\n- ${recent.slice(-20).join("\n- ") || "(none yet)"}`,
+    json: true,
+    maxTokens: 2000,
+  });
+  const q = parseJson(raw)?.question;
+  return typeof q === "string" && q.trim() ? q.trim().slice(0, 300) : null;
+}
+
+// =====================================================================================
+// Output cleanup
+// =====================================================================================
 
 function parseJson(text) {
   const cleaned = String(text).replace(/^\s*```(?:json)?/i, "").replace(/```\s*$/, "").trim();
@@ -325,15 +386,28 @@ function parseJson(text) {
         /* fall through */
       }
     }
-    // The model answered in plain text. Show it as a reply with no actions.
     return { reply: cleaned.slice(0, 1500), actions: [] };
   }
 }
 
-function normalize(obj) {
+function normalize(obj, allowedTypes) {
+  const allowed = new Set(allowedTypes || []);
   const reply = typeof obj?.reply === "string" && obj.reply.trim() ? obj.reply.trim() : "Done.";
-  const actions = (Array.isArray(obj?.actions) ? obj.actions : [])
-    .filter((a) => a && typeof a === "object" && ACTION_TYPES.includes(a.type))
-    .slice(0, MAX_ACTIONS);
-  return { reply, actions };
+  const questions = (Array.isArray(obj?.questions) ? obj.questions : [])
+    .filter((q) => q && typeof q.question === "string")
+    .slice(0, 6)
+    .map((q, i) => ({
+      id: String(q.id || `q${i + 1}`).slice(0, 40),
+      question: q.question.slice(0, 200),
+      options: (Array.isArray(q.options) ? q.options : []).map((o) => String(o).slice(0, 60)).filter(Boolean).slice(0, 8),
+      multi: Boolean(q.multi),
+    }));
+  const actions = questions.length
+    ? []
+    : (Array.isArray(obj?.actions) ? obj.actions : []).filter((a) => a && typeof a === "object" && allowed.has(a.type)).slice(0, MAX_ACTIONS);
+  const remember = (Array.isArray(obj?.remember) ? obj.remember : [])
+    .filter((r) => typeof r === "string" && r.trim())
+    .map((r) => r.trim().slice(0, 160))
+    .slice(0, 3);
+  return { reply, questions, actions, remember };
 }

@@ -2,17 +2,16 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Server Builder</title>
   <link rel="icon" type="image/png" href="logo.png" />
   <link rel="apple-touch-icon" href="logo.png" />
-  <meta name="theme-color" content="#1e1f22" />
+  <meta name="theme-color" content="#111214" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <!-- Login -->
   <div id="login" class="overlay hidden">
-    <form id="loginForm" class="card">
+    <form id="loginForm" class="login-card">
       <img class="logo" src="logo.png" alt="" />
       <h1>Server Builder</h1>
       <p class="muted">Enter your dashboard password</p>
@@ -23,36 +22,26 @@
   </div>
 
   <div id="app" class="app hidden">
-    <!-- Server rail -->
     <nav id="rail" class="rail" aria-label="Servers"></nav>
 
-    <!-- Chat -->
-    <main class="chat">
-      <header class="chat-head">
+    <div class="main">
+      <header class="topbar">
         <div class="bot-id">
           <img id="botAvatar" alt="" />
-          <div>
+          <div class="bot-text">
             <div id="botName" class="bot-name">Connecting…</div>
             <div id="botSub" class="muted small"></div>
           </div>
         </div>
-        <div class="head-right">
+        <div class="top-right">
           <span id="serverName" class="server-name"></span>
-          <button id="togglePanel" class="btn ghost small" type="button" title="Show server layout">📋 Layout</button>
+          <button id="togglePanel" class="btn ghost small" type="button" title="Server layout">📋</button>
         </div>
       </header>
+      <nav id="tabs" class="tabs" role="tablist"></nav>
+      <section id="view" class="view"></section>
+    </div>
 
-      <div id="messages" class="messages" aria-live="polite"></div>
-
-      <div id="chips" class="chips"></div>
-
-      <form id="composer" class="composer">
-        <textarea id="input" rows="1" placeholder="Tell the bot what to build… e.g. make a gaming server with roles and voice chats"></textarea>
-        <button id="send" class="btn primary" type="submit" aria-label="Send">➤</button>
-      </form>
-    </main>
-
-    <!-- Server layout -->
     <aside id="panel" class="panel">
       <div class="panel-head">
         <strong>Server layout</strong>
@@ -62,6 +51,7 @@
     </aside>
   </div>
 
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="app.js"></script>
 </body>
 </html>

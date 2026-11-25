@@ -358,7 +358,7 @@ export async function onMessage(msg) {
   await ch.send({ content: text.slice(0, 2000), allowedMentions: { users: [msg.author.id] } }).catch(() => {});
 }
 
-function leaderboard(guildId) {
+export function leaderboard(guildId) {
   const users = getConfig(guildId).levels?.users || {};
   return Object.entries(users)
     .map(([id, u]) => ({ id, ...u, total: totalXp(u) }))

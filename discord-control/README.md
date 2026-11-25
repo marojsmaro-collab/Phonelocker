@@ -1,34 +1,31 @@
-# Discord Bot Builder
+# Server Builder
 
-A website where you chat with your Discord bot and it builds your server for you.
-Type things like "make a general channel with emojis" or "set up a full gaming server" and it makes the
-categories, channels, roles, permissions, messages and emojis live.
+An AI Discord bot you control from a website. Tell it what you want in normal words and it builds it live:
+whole servers, channels, roles, colors, AI made emojis, server icons, banners, welcome cards and more.
+Every feature also has its own dashboard page with switches, so you never need commands.
 
 ## What it can do
 
-- Create, rename, move and delete channels (text, voice, announcement, forum, stage)
-- Create and delete categories, including private ones
-- Create, edit and delete roles with colors and permissions
-- Set channel permissions per role (private staff channels and so on)
-- Add custom emojis from an image link, delete emojis
-- Send messages and embeds (welcome, rules)
-- Rename the server and change its icon
-- **Welcome cards**: posts a welcome image with the new member's pfp, plus goodbye messages and autoroles
-- **AutoMod**: sets up Discord's own AutoMod (bad words, slurs, links, invites, spam, mention spam, auto timeouts).
-  It runs on Discord's side so it keeps working even when the bot is offline
-- **Mod log**: logs mod actions and AutoMod alerts to a channel
-- **Tickets**: a panel with an "Open a ticket" button that makes a private channel for the member and staff,
-  with a Close button that saves a transcript to a log channel
-- **Self roles**: a panel of buttons people tap to get or remove roles (pings, games, colors)
-- **Leveling**: XP for chatting, level up messages, reward roles, `/rank` cards and `/leaderboard`
-- **Bot profile**: sets its own pfp from `assets/bot-avatar.png` and a custom status you can change by chatting
-- **Mod commands** inside Discord (only staff can see them): `/ban` `/unban` `/kick` `/timeout` `/untimeout`
-  `/warn` `/warnings` `/clearwarns` `/purge` `/lock` `/unlock` `/slowmode`. Everyone gets `/rank` `/leaderboard` `/help`
-- Shows the live server layout and which bot features are on next to the chat
-- Asks you to confirm before deleting anything
+**🤖 AI Builder**
+- Builds entire servers from one message: categories, channels, roles with colors and permissions, rules, welcome posts
+- Asks you quick questions with tap-to-answer buttons before big builds, so it builds exactly your vibe
+- Live progress while it builds, fixes its own mistakes, and an **Undo** button that deletes everything a build made
+- Remembers your style (colors, naming) for next time
+- Uses the strongest free AI it can (Gemini) and switches to a backup (Groq) if one is busy
 
-Try: "set up auto moderation", "welcome new people with a pfp card", "make a ticket system for support",
-"turn on leveling with role rewards", "make a self roles panel for pings".
+**🎨 AI Art Studio**
+- Custom emojis with transparent backgrounds, server icons, banners and pictures, made by AI
+- Preview first, then tap to use it
+
+**Everything else (each has a dashboard page)**
+- 👋 Welcome cards with the new member's pfp, goodbye messages, autoroles
+- ⭐ Leveling with rank cards, level up messages, reward roles, leaderboard
+- 🎫 Tickets with private channels and transcripts
+- 🎭 Self role buttons and quick role making (gradient colors on boosted servers)
+- 🎉 Giveaways with an Enter button, Discord polls, and a daily AI **Question of the Day** with a thread for answers
+- 🛡️ AutoMod (works even when the bot is offline), mod log, warnings list, and staff slash commands
+  (`/ban` `/kick` `/timeout` `/warn` `/purge` `/lock` and more). Everyone gets `/rank` `/leaderboard` `/help`
+- ⚙️ Bot status, pfp and banner
 
 ## 1. Reset your bot token first
 
@@ -44,15 +41,17 @@ Only put the new token in `.env`. Never commit it.
 
 Everything else works without them. The website shows a yellow warning while one is off.
 
-## 2. Get a free AI key (pick one)
+## 2. Get free AI keys (more is better)
 
-| Provider | Cost | Where |
-| --- | --- | --- |
-| Google Gemini | Free tier | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) → sign in with Google → **Create API key** |
-| Groq | Free tier | [console.groq.com/keys](https://console.groq.com/keys) → sign up → **Create API Key** |
-| Anthropic Claude | Paid (best at big builds) | [platform.claude.com](https://platform.claude.com) |
+| Provider | Cost | Where | Role |
+| --- | --- | --- | --- |
+| Google Gemini | Free tier | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) → **Create API key** | Main brain (smartest free) |
+| Groq | Free tier | [console.groq.com/keys](https://console.groq.com/keys) → **Create API Key** | Fast backup |
+| Anthropic Claude | Paid | [platform.claude.com](https://platform.claude.com) | Optional |
 
-Free tiers have daily and per-minute limits. If you hit one, wait a bit or switch to the other free provider.
+Put every key you have in `.env`. If one hits its free limit the bot switches to the next one by itself.
+AI images use Pollinations, which works without a key. A free key from [enter.pollinations.ai](https://enter.pollinations.ai)
+(`POLLINATIONS_KEY`) makes it faster. If the image AI is down, the bot designs the art itself as a backup.
 
 ## 3. Run it
 
@@ -119,7 +118,9 @@ uploading the `.env` file.
 
 ## How it works
 
-`src/server.js` runs the website and API. `src/ai.js` sends your message plus the current server layout to the AI,
+`src/art.js` makes AI art (Pollinations images, background removal for emojis, and an SVG backup rendered with
+resvg-wasm). `src/fun.js` has giveaways, polls and Question of the Day with a scheduler.
+`src/server.js` runs the website and API, including build jobs with live progress and undo. `src/ai.js` sends your message plus the current server layout to the AI,
 which answers with a plan (a list of actions). `src/discord.js` runs those actions with discord.js.
 `src/features.js` has the welcome, AutoMod and mod command logic, `src/extras.js` has tickets, self roles, leveling
 and the bot's profile, `src/card.js` draws welcome and rank cards in pure JavaScript (so it works on Termux too), and

@@ -51,3 +51,8 @@ export function updateConfig(guildId, fn) {
   persist();
   return cfg;
 }
+
+/** Every server id that has settings (for the scheduler). */
+export function allGuildIds() {
+  return Object.keys(data).filter((k) => /^\d+$/.test(k));
+}

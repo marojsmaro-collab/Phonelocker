@@ -35,6 +35,19 @@ import {
   applyBranding,
   extraState,
 } from "./extras.js";
+import { makeIcon, makeBanner, makeEmoji, makeImage, imageExt } from "./art.js";
+import {
+  startGiveaway,
+  endGiveaway,
+  rerollGiveaway,
+  onGiveawayButton,
+  createPoll,
+  configureQotd,
+  postQotd,
+  startScheduler,
+  funState,
+} from "./fun.js";
+import { getConfig } from "./store.js";
 
 /** The live Discord client. Replaced if we have to fall back to fewer intents. */
 export let client = null;
@@ -50,6 +63,7 @@ async function registerCommands(c) {
 }
 
 function route(i) {
+  if (i.isButton() && i.customId.startsWith("gw:")) return onGiveawayButton(i, i.customId.slice(3));
   if (i.isButton()) return onButton(i);
   if (i.isChatInputCommand() && handlesCommand(i.commandName)) return onExtraCommand(i);
   return onInteraction(i);
@@ -109,7 +123,13 @@ function loginOnce(c, token) {
 export let membersIntentMissing = false;
 export let contentIntentMissing = false;
 
+let schedulerStarted = false;
+
 export async function startBot(token) {
+  if (!schedulerStarted) {
+    schedulerStarted = true;
+    startScheduler(() => client);
+  }
   for (let i = 0; i < MODES.length; i++) {
     const mode = MODES[i];
     client = makeClient(mode);
@@ -172,9 +192,126 @@ const TYPE_FROM_LABEL = {
 
 /** A compact picture of the server that the AI reads and the website shows. */
 export async function snapshot(guild, opts) {
-  const features = { ...(await featureState(guild, opts)), ...extraState(guild) };
+  const fs = await featureState(guild, opts);
+  const features = { ...fs, ...extraState(guild), ...funState(guild) };
   features.contentIntent = !contentIntentMissing;
-  return { ...layout(guild), features };
+  delete features.automodDetail;
+  const cfg = getConfig(guild.id);
+  return {
+    ...layout(guild),
+    boostLevel: guild.premiumTier,
+    canBanner: guild.features.includes("BANNER"),
+    emojiSlotsLeft: emojiSlotsLeft(guild),
+    features,
+    memory: cfg.memory?.notes || [],
+    // Raw settings with ids, for the dashboard forms (the AI never sees this part)
+    config: {
+      welcome: cfg.welcome || {},
+      goodbye: cfg.goodbye || {},
+      autoroles: cfg.autoroles || [],
+      modLogChannelId: cfg.modLogChannelId || null,
+      tickets: cfg.tickets || null,
+      levels: cfg.levels ? { ...cfg.levels, users: undefined } : null,
+      qotd: cfg.qotd ? { ...cfg.qotd, history: undefined } : null,
+      automod: fs.automodDetail || {},
+      bot: getConfig("_bot").status || null,
+    },
+  };
+}
+
+const EMOJI_SLOTS = [50, 100, 150, 250];
+
+export function emojiSlotsLeft(guild) {
+  const used = guild.emojis.cache.filter((e) => !e.animated).size;
+  return Math.max(0, (EMOJI_SLOTS[guild.premiumTier] ?? 50) - used);
+}
+
+/** Ids of everything that exists right now (to work out what a build created). */
+export function idSets(guild) {
+  return {
+    channels: new Set(guild.channels.cache.filter((c) => !c.isThread()).map((c) => c.id)),
+    roles: new Set(guild.roles.cache.map((r) => r.id)),
+    emojis: new Set(guild.emojis.cache.map((e) => e.id)),
+  };
+}
+
+export function createdSince(guild, before) {
+  const now = idSets(guild);
+  const diff = (k) => [...now[k]].filter((id) => !before[k].has(id));
+  return { channels: diff("channels"), roles: diff("roles"), emojis: diff("emojis") };
+}
+
+/** Delete everything a build created. Channels first, then categories, roles and emojis. */
+export async function undoCreated(guild, created, onResult = () => {}) {
+  const results = [];
+  const push = (r) => {
+    results.push(r);
+    onResult(r);
+  };
+  const chans = created.channels.map((id) => guild.channels.cache.get(id)).filter(Boolean);
+  const ordered = [...chans.filter((c) => c.type !== ChannelType.GuildCategory), ...chans.filter((c) => c.type === ChannelType.GuildCategory)];
+  for (const c of ordered) {
+    const name = c.name;
+    await c.delete("Undo build").then(() => push({ ok: true, message: `Deleted #${name}` }), (e) => push({ ok: false, message: `#${name}: ${friendlyError(e)}` }));
+  }
+  for (const id of created.roles) {
+    const r = guild.roles.cache.get(id);
+    if (!r) continue;
+    const name = r.name;
+    await r.delete("Undo build").then(() => push({ ok: true, message: `Deleted @${name}` }), (e) => push({ ok: false, message: `@${name}: ${friendlyError(e)}` }));
+  }
+  for (const id of created.emojis) {
+    const e = guild.emojis.cache.get(id);
+    if (!e) continue;
+    const name = e.name;
+    await e.delete().then(() => push({ ok: true, message: `Deleted :${name}:` }), (err) => push({ ok: false, message: `:${name}: ${friendlyError(err)}` }));
+  }
+  return results;
+}
+
+// ---------- art helpers (also used by the dashboard's Art page) ----------
+
+function emojiName(name, guild) {
+  let base = String(name || "emoji").toLowerCase().replace(/[^a-z0-9_]/g, "_").replace(/_+/g, "_").replace(/^_|_$/g, "").slice(0, 28);
+  if (base.length < 2) base = `${base}em`.slice(0, 2);
+  let n = base, i = 2;
+  while (guild.emojis.cache.some((e) => e.name === n)) n = `${base}${i++}`;
+  return n;
+}
+
+export async function addEmoji(guild, name, buffer) {
+  if (emojiSlotsLeft(guild) <= 0) throw new Error("No more emoji slots on this server.");
+  const e = await guild.emojis.create({ attachment: buffer, name: emojiName(name, guild) });
+  return `Added emoji :${e.name}:`;
+}
+
+export async function applyIcon(guild, buffer) {
+  await guild.setIcon(buffer);
+  return "New server icon is up";
+}
+
+function fallbackChannel(guild) {
+  const w = getConfig(guild.id).welcome?.channelId;
+  return (
+    (w && guild.channels.cache.get(w)) ||
+    guild.systemChannel ||
+    guild.channels.cache.find((c) => c.type === ChannelType.GuildText && /welcome|rules|info/i.test(c.name)) ||
+    guild.channels.cache.find((c) => c.type === ChannelType.GuildText)
+  );
+}
+
+export async function applyBanner(guild, buffer, channelName) {
+  if (guild.features.includes("BANNER") && !channelName) {
+    await guild.setBanner(buffer);
+    return "New server banner is up";
+  }
+  const ch = channelName ? findChannel(guild, channelName, { includeCategories: false }) : fallbackChannel(guild);
+  if (!ch?.isTextBased?.()) throw new Error("Tell me which channel to post the banner in.");
+  const file = `banner.${imageExt(buffer)}`;
+  await ch.send({ files: [{ attachment: buffer, name: file }] });
+  return guild.features.includes("BANNER")
+    ? `Posted the banner in #${ch.name}`
+    : `Posted the banner in #${ch.name} (server banners need boost level 2)`;
 }
 
 function layout(guild) {
@@ -337,6 +474,12 @@ function overwriteObject(entry) {
 
 function buildOverwrites(guild, a) {
   const list = (a.permissions || []).map((p) => overwriteFor(guild, p));
+  if (a.read_only) {
+    const everyone = list.find((o) => o.id === guild.id);
+    const deny = ["SendMessages", "CreatePublicThreads", "SendMessagesInThreads"];
+    if (everyone) everyone.deny = [...new Set([...everyone.deny, ...deny])];
+    else list.push({ id: guild.id, type: OverwriteType.Role, allow: [], deny });
+  }
   if (a.private) {
     const everyone = list.find((o) => o.id === guild.id);
     if (everyone) everyone.deny = [...new Set([...everyone.deny, "ViewChannel"])];
@@ -350,6 +493,11 @@ function buildOverwrites(guild, a) {
     });
   }
   return list.length ? list : undefined;
+}
+
+function gradient(guild, a) {
+  const g = color(a.gradient_color);
+  return g && guild.features.includes("ENHANCED_ROLE_COLORS") ? { secondaryColor: g } : {};
 }
 
 function color(c) {
@@ -418,6 +566,10 @@ const handlers = {
       }
     }
     if (Number.isFinite(a.position)) edit.position = a.position;
+    if (typeof a.read_only === "boolean") {
+      await ch.permissionOverwrites.edit(guild.id, { SendMessages: a.read_only ? false : null });
+      if (!Object.keys(edit).length) return `${ch.name} is now ${a.read_only ? "read only" : "open to chat"}`;
+    }
     if (!Object.keys(edit).length) return `Nothing to change on ${ch.name}`;
     const updated = await ch.edit(edit);
     return `Updated ${updated.name}`;
@@ -458,7 +610,7 @@ const handlers = {
       mentionable: Boolean(a.mentionable),
     };
     const c = color(a.color);
-    if (c) opts.colors = { primaryColor: c };
+    if (c) opts.colors = { primaryColor: c, ...gradient(guild, a) };
     if (a.permissions) opts.permissions = toPerms(a.permissions);
     const role = await guild.roles.create(opts);
     return `Created role @${role.name}`;
@@ -468,8 +620,8 @@ const handlers = {
     const role = must(findRole(guild, a.name), "role", a.name);
     const edit = {};
     if (a.new_name) edit.name = a.new_name;
-    const c = color(a.color);
-    if (c) edit.colors = { primaryColor: c };
+    const c = color(a.color) || (a.gradient_color ? role.hexColor : undefined);
+    if (c) edit.colors = { primaryColor: c, ...gradient(guild, a) };
     if (typeof a.hoist === "boolean") edit.hoist = a.hoist;
     if (typeof a.mentionable === "boolean") edit.mentionable = a.mentionable;
     if (a.permissions) edit.permissions = toPerms(a.permissions);
@@ -507,12 +659,14 @@ const handlers = {
     if (!ch.isTextBased()) throw new Error(`#${ch.name} is not a text channel.`);
     const payload = {};
     if (a.content) payload.content = String(a.content).slice(0, 2000);
-    if (a.embed_title || a.embed_description) {
+    if (a.embed_title || a.embed_description || a.image_url) {
       payload.embeds = [
         {
           title: a.embed_title ? String(a.embed_title).slice(0, 256) : undefined,
           description: a.embed_description ? String(a.embed_description).slice(0, 4096) : undefined,
           color: color(a.color) ? parseInt(color(a.color).slice(1), 16) : 0x5865f2,
+          image: /^https?:\/\//i.test(a.image_url || "") ? { url: a.image_url } : undefined,
+          footer: a.footer ? { text: String(a.footer).slice(0, 2048) } : undefined,
         },
       ];
     }
@@ -584,30 +738,97 @@ const handlers = {
   async set_bot_avatar(guild, a) {
     return setBotAvatar(guild.client, a);
   },
+
+  // ----- AI art -----
+
+  async ai_server_icon(guild, a) {
+    const { buffer, source } = await makeIcon(a.idea || a.prompt || guild.name, guild.name);
+    return `${await applyIcon(guild, buffer)}${source === "ai-image" ? "" : " (backup art style)"}`;
+  },
+
+  async ai_server_banner(guild, a) {
+    const { buffer } = await makeBanner(a.idea || a.prompt || guild.name, guild.name);
+    return applyBanner(guild, buffer, a.channel);
+  },
+
+  async ai_emojis(guild, a) {
+    const list = [].concat(a.emojis || []).filter((e) => e && (e.idea || e.prompt || e.name)).slice(0, 10);
+    if (!list.length) throw new Error("Tell me which emojis to make.");
+    const made = [], failed = [];
+    for (const e of list) {
+      if (emojiSlotsLeft(guild) <= 0) {
+        failed.push(`${e.name} (no slots left)`);
+        continue;
+      }
+      try {
+        const { buffer } = await makeEmoji(e.idea || e.prompt || e.name);
+        made.push((await addEmoji(guild, e.name || e.idea, buffer)).replace("Added emoji ", ""));
+      } catch (err) {
+        failed.push(`${e.name}: ${friendlyError(err)}`);
+      }
+    }
+    if (!made.length) throw new Error(`No emojis made. ${failed.join("; ")}`);
+    return `Made ${made.length} emoji${made.length > 1 ? "s" : ""}: ${made.join(" ")}${failed.length ? ` (failed: ${failed.join("; ")})` : ""}`;
+  },
+
+  async ai_image_post(guild, a) {
+    const ch = must(findChannel(guild, a.channel, { includeCategories: false }), "channel", a.channel);
+    if (!ch.isTextBased()) throw new Error(`#${ch.name} is not a text channel.`);
+    const { buffer } = await makeImage(a.idea || a.prompt || "something cool", a.wide !== false);
+    await ch.send({ content: a.message ? String(a.message).slice(0, 2000) : undefined, files: [{ attachment: buffer, name: `art.${imageExt(buffer)}` }] });
+    return `Posted AI art in #${ch.name}`;
+  },
+
+  // ----- fun -----
+
+  async start_giveaway(guild, a) {
+    return startGiveaway(guild, a);
+  },
+
+  async end_giveaway(guild, a) {
+    return endGiveaway(guild, a);
+  },
+
+  async reroll_giveaway(guild, a) {
+    return rerollGiveaway(guild, a);
+  },
+
+  async create_poll(guild, a) {
+    return createPoll(guild, a);
+  },
+
+  async setup_qotd(guild, a) {
+    return configureQotd(guild, a);
+  },
+
+  async post_qotd(guild) {
+    return postQotd(guild);
+  },
 };
 
 export const ACTION_TYPES = Object.keys(handlers);
 
 /** Run actions in order. One failing action does not stop the rest. */
-export async function runActions(guild, actions) {
+export async function runActions(guild, actions, onResult = () => {}) {
   const results = [];
   for (const action of actions) {
     const fn = handlers[action?.type];
-    if (!fn) {
-      results.push({ action, ok: false, message: `Unknown action "${action?.type}"` });
-      continue;
+    let r;
+    if (!fn) r = { action, ok: false, message: `Unknown action "${action?.type}"` };
+    else {
+      try {
+        r = { action, ok: true, message: await fn(guild, action) };
+      } catch (err) {
+        r = { action, ok: false, message: friendlyError(err) };
+      }
     }
-    try {
-      const message = await fn(guild, action);
-      results.push({ action, ok: true, message });
-    } catch (err) {
-      results.push({ action, ok: false, message: friendlyError(err) });
-    }
+    results.push(r);
+    onResult(r);
   }
   return results;
 }
 
-function friendlyError(err) {
+export function friendlyError(err) {
   const code = err?.code;
   if (code === 50013) return "Missing permissions. Give the bot a higher role or Administrator.";
   if (code === 30005) return "This server already has the max number of roles.";

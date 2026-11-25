@@ -265,15 +265,20 @@ export async function featureState(guild, { fresh = false } = {}) {
   const chName = (id) => (id ? guild.channels.cache.get(id)?.name ?? "(deleted channel)" : null);
 
   let automod = [];
+  let automodDetail = {};
   const cached = ruleCache.get(guild.id);
-  if (!fresh && cached && Date.now() - cached.at < 30_000) automod = cached.rules;
-  else {
+  if (!fresh && cached && Date.now() - cached.at < 30_000) {
+    automod = cached.rules;
+    automodDetail = cached.detail;
+  } else {
     try {
       const rules = await guild.autoModerationRules.fetch();
       automod = rules.map((r) => ({ name: r.name, enabled: r.enabled }));
-      ruleCache.set(guild.id, { at: Date.now(), rules: automod });
+      automodDetail = describeAutomod(rules);
+      ruleCache.set(guild.id, { at: Date.now(), rules: automod, detail: automodDetail });
     } catch {
       automod = cached?.rules ?? [];
+      automodDetail = cached?.detail ?? {};
     }
   }
 
@@ -293,7 +298,37 @@ export async function featureState(guild, { fresh = false } = {}) {
     autoroles: (cfg.autoroles || []).map((id) => guild.roles.cache.get(id)?.name).filter(Boolean),
     modLog: chName(cfg.modLogChannelId),
     automod,
+    automodDetail,
     membersIntent: guild.client.options.intents.has("GuildMembers"),
+  };
+}
+
+/** Current AutoMod settings in the same shape setup_automod takes (for the dashboard form). */
+function describeAutomod(rules) {
+  const list = [...rules.values()];
+  const on = (r) => Boolean(r && r.enabled);
+  const preset = list.find((r) => r.triggerType === AutoModerationRuleTriggerType.KeywordPreset);
+  const presets = on(preset) ? preset.triggerMetadata.presets || [] : [];
+  const words = list.find((r) => r.name === RULE.words && r.triggerType === AutoModerationRuleTriggerType.Keyword);
+  const links = list.find((r) => r.name === RULE.links && r.triggerType === AutoModerationRuleTriggerType.Keyword);
+  const patterns = on(links) ? links.triggerMetadata.regexPatterns || [] : [];
+  const spam = list.find((r) => r.triggerType === AutoModerationRuleTriggerType.Spam);
+  const mentions = list.find((r) => r.triggerType === AutoModerationRuleTriggerType.MentionSpam);
+  const any = [preset, words, links, spam, mentions].find((r) => on(r));
+  const timeout = [words, links, mentions].map((r) => r?.actions?.find((x) => x.type === AutoModerationActionType.Timeout)).find(Boolean);
+  const alert = any?.actions?.find((x) => x.type === AutoModerationActionType.SendAlertMessage);
+  return {
+    bad_words: presets.includes(AutoModerationRuleKeywordPresetType.Profanity),
+    sexual_content: presets.includes(AutoModerationRuleKeywordPresetType.SexualContent),
+    slurs: presets.includes(AutoModerationRuleKeywordPresetType.Slurs),
+    block_words: on(words) ? words.triggerMetadata.keywordFilter || [] : [],
+    block_links: patterns.includes(LINK_REGEX),
+    block_invites: patterns.includes(INVITE_REGEX) || patterns.includes(LINK_REGEX),
+    anti_spam: on(spam),
+    max_mentions: on(mentions) ? mentions.triggerMetadata.mentionTotalLimit || 0 : 0,
+    timeout_minutes: timeout ? Math.round((timeout.metadata.durationSeconds || 0) / 60) : 0,
+    alert_channel: alert?.metadata?.channelId || null,
+    exempt_roles: any ? [...any.exemptRoles.keys()] : [],
   };
 }
 
