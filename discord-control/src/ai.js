@@ -139,13 +139,17 @@ async function callGemini({ system, turns, user, json, maxTokens }) {
     { role: "user", parts: [{ text: user }] },
   ];
   let lastError;
+  // New AI Studio keys start with "AQ." instead of "AIza". Both work in the header; if Google rejects
+  // the header we try the ?key= style once too.
+  let keyInQuery = false;
   for (const m of unique([MODELS.gemini(), "gemini-flash-latest", "gemini-flash-lite-latest"])) {
-    for (let attempt = 0; attempt < 2; attempt++) {
+    for (let attempt = 0; attempt < 3; attempt++) {
       let res;
       try {
-        res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(m)}:generateContent`, {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(m)}:generateContent${keyInQuery ? `?key=${encodeURIComponent(key)}` : ""}`;
+        res = await fetch(url, {
           method: "POST",
-          headers: { "content-type": "application/json", "x-goog-api-key": key },
+          headers: { "content-type": "application/json", ...(keyInQuery ? {} : { "x-goog-api-key": key }) },
           body: JSON.stringify({
             systemInstruction: { parts: [{ text: system }] },
             contents,
@@ -170,7 +174,12 @@ async function callGemini({ system, turns, user, json, maxTokens }) {
         break;
       }
       const msg = data?.error?.message || res.statusText;
-      if (res.status === 400 && /api key/i.test(msg)) throw new Error("Gemini says the API key is wrong.");
+      const keyProblem = res.status === 401 || ((res.status === 400 || res.status === 403) && /api.?key|credential|access.?token|unauthenticated/i.test(msg));
+      if (keyProblem && !keyInQuery) {
+        keyInQuery = true;
+        continue;
+      }
+      if (keyProblem) throw new Error(`Gemini didn't accept the API key: ${msg}`);
       if (res.status === 429) {
         lastError = new SoftError(`Gemini free limit hit. (${msg})`);
         const wait = retryAfterMs(res, msg);
